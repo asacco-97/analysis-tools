@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from . import plots, tabulation
 
 
 def fig_to_base64_png(fig: plt.Figure) -> str:
@@ -42,66 +44,79 @@ def tweedie_deviance_residuals(y: np.ndarray, mu: np.ndarray, p: float) -> np.nd
     return residuals
 
 
-def plot_deviance_residuals(
+def plot_residual_fit(
     df: pd.DataFrame,
     actual_col: str,
     predicted_col: str,
     exposure_col: str | None = None,
+    residual_type: str = "raw",  # "raw", "normalized", "tweedie_deviance"
+    p: float | None = None,      # needed if tweedie
+    num_groups: int = 400,
     figsize: tuple[int, int] = (8, 6),
     split_name: str | None = None,
-    p: float = 1.70,
-    num_groups: int = 400,
     title: str | None = None,
 ) -> plt.Figure:
-    """Return a plot of mean deviance residuals vs. fitted values."""
-    fig, ax = plt.subplots(figsize=figsize)
+    """
+    Plots mean residuals ±1 std vs fitted for any residual type: raw, normalized, 
+    or tweedie deviance.
 
-    residual = tweedie_deviance_residuals(df[actual_col], df[predicted_col], p)
+    Parameters
+    ----------
+    residual_type : str
+        Type of residual to compute: "raw", "normalized", or "tweedie_deviance".
+    p : float, optional
+        Power parameter for Tweedie (needed if residual_type='tweedie_deviance')
+    """
     df = df.copy()
-    df["residual"] = residual
-    df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
-    df["normalized_residual"] = (df[actual_col] - df[predicted_col]) / np.sqrt(df[predicted_col])
 
-    grouped = (
-        df.groupby("group")
-        .agg(
-            count=(predicted_col, "count"),
-            avg_predicted=(predicted_col, "mean"),
-            avg_residual=("normalized_residual", "mean"),
-            std_residual=("normalized_residual", "std"),
-            mean_abs_residual=("normalized_residual", lambda x: np.mean(np.abs(x))),
-        )
-        .reset_index()
-    )
+    if residual_type == "raw":
+        df["residual"] = df[actual_col] - df[predicted_col]
+
+    elif residual_type == "normalized":
+        df["residual"] = (df[actual_col] - df[predicted_col]) / np.sqrt(np.maximum(df[predicted_col], 1e-6))
+
+    elif residual_type == "tweedie_deviance":
+        if p is None:
+            raise ValueError("Must provide `p` for tweedie_deviance residuals.")
+        df["residual"] = tweedie_deviance_residuals(df[actual_col], df[predicted_col], p)
+
+    else:
+        raise ValueError(f"Unknown residual_type '{residual_type}'. Choose from 'raw', 'normalized', 'tweedie_deviance'.")
+
+    # Bin predictions to stabilize plot
+    df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
+
+    # Aggregate
+    grouped = df.groupby("group").agg(
+        count=(predicted_col, "count"),
+        avg_predicted=(predicted_col, "mean"),
+        avg_residual=("residual", "mean"),
+        std_residual=("residual", "std"),
+    ).reset_index()
 
     group_size = int(np.nanpercentile(grouped["count"], 50))
-    ax.scatter(grouped["avg_predicted"], grouped["avg_residual"], s=8, alpha=0.3)
-    ax.axhline(0, linestyle="--", color="gray")
-    ax.errorbar(
+
+    # Plot
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(grouped["avg_predicted"], grouped["avg_residual"],
+            marker='o', linestyle='-', color='blue', label="Mean Residual")
+
+    ax.fill_between(
         grouped["avg_predicted"],
-        grouped["avg_residual"],
-        yerr=grouped["std_residual"],
-        fmt="o",
-        alpha=0.6,
-        capsize=2,
-        label="±1 SD",
-    )
-    ax.plot(
-        grouped["avg_predicted"],
-        grouped["mean_abs_residual"],
-        marker="x",
-        linestyle="--",
-        color="red",
-        label="Mean |Residual|",
+        grouped["avg_residual"] - grouped["std_residual"],
+        grouped["avg_residual"] + grouped["std_residual"],
+        color='blue', alpha=0.2, label="±1 SD"
     )
 
-    effective_title = title or "Avg. and Std. of Deviance Residuals vs Fitted"
+    effective_title = title or f"{residual_type.capitalize()} Residual Fit & Heteroskedasticity Check"
     effective_title += f"\n(Group Size: {group_size})"
     if split_name:
         effective_title += f" ({split_name})"
+
     ax.set_title(effective_title, fontsize=14)
     ax.set_xlabel("Average Fitted Value")
-    ax.set_ylabel("Average Residual")
+    ax.set_ylabel("Residual")
+    ax.axhline(0, linestyle="--", color="gray")
     ax.grid(True, linestyle="--", alpha=0.7)
     ax.legend(frameon=True)
     plt.tight_layout()
@@ -277,14 +292,16 @@ def generate_model_analysis_report(
     gain_kwargs: Dict[str, Any] | None = None,
     lift_kwargs: Dict[str, Any] | None = None,
     residual_kwargs: Dict[str, Any] | None = None,
-    dev_residual_kwargs: Dict[str, Any] | None = None,
+    residual_fit_kwargs: Dict[str, Any] | None = None,
+    error_group_cols: Iterable[str] | None = None,
+    tabulation_vars: Iterable[str] | None = None,
     title: str | None = None,
 ) -> None:
     """Generate a full HTML model analysis report."""
     gain_kwargs = gain_kwargs or {}
     lift_kwargs = lift_kwargs or {}
     residual_kwargs = residual_kwargs or {}
-    dev_residual_kwargs = dev_residual_kwargs or {}
+    residual_fit_kwargs = residual_fit_kwargs or {}
 
     html_output = "<html><head><title>Model Analysis Report</title></head><body>"
     html_output += "<h1>Model Analysis Report</h1>"
@@ -337,17 +354,41 @@ def generate_model_analysis_report(
     html_output += "<h2>Avg. and Std. of Deviance Residuals Plots</h2><div style='display:flex;flex-wrap:wrap'>"
     for split_value in df[split_col].unique():
         df_split = df[df[split_col] == split_value].copy()
-        fig_avg_resid = plot_deviance_residuals(
+        fig_avg_resid = plot_residual_fit(
             df_split,
             actual_col=actual_col,
             predicted_col=predicted_col,
             exposure_col=exposure_col,
             split_name=split_value,
             title=title,
-            **dev_residual_kwargs,
+            **residual_fit_kwargs,
         )
         html_output += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_base64_png(fig_avg_resid)}</div>"
     html_output += "</div>"
+
+    if error_group_cols:
+        html_output += "<h2>Error by Group</h2><div style='display:flex;flex-wrap:wrap'>"
+        for split_value in df[split_col].unique():
+            df_split = df[df[split_col] == split_value].copy()
+            fig_err = plots.plot_error_by_group_grid(
+                df_split,
+                actual_col,
+                predicted_col,
+                error_group_cols,
+            )
+            html_output += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_base64_png(fig_err)}</div>"
+        html_output += "</div>"
+
+    if tabulation_vars:
+        html_output += "<h2>Tabulations</h2>"
+        html_output += tabulation.generate_tabulations_html(
+            df,
+            prediction_col=predicted_col,
+            truth_col=actual_col,
+            group_vars=list(tabulation_vars),
+            split_col=split_col,
+            weights_col=exposure_col,
+        )
 
     html_output += "</body></html>"
 
