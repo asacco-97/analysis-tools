@@ -7,6 +7,7 @@ from typing import Dict, Iterable, Sequence
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 import seaborn as sns
 from sklearn.metrics import auc, roc_curve
 
@@ -155,24 +156,33 @@ def plot_error_by_group(df, target_col, pred_col, group_col, bins=10, ax=None):
     ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
     ax1.set_title(f'Error by {group_col}')
 
-def plot_error_by_group_grid(df, target_col, pred_col, group_cols, bins=10, ncols=2, figsize=(6, 4)):
-    """
-    Plot prediction error and count by multiple group columns using shared grid layout.
-    Calls `plot_error_by_group` for each plot.
-    """
+def plot_error_by_group_grid(
+    df,
+    target_col,
+    pred_col,
+    group_cols,
+    bins=10,
+    ncols=2,
+    figsize=(6, 4),
+) -> plt.Figure:
+    """Return a grid of error-by-group plots."""
     n_rows = -(-len(group_cols) // ncols)  # ceiling division
-    fig, axes = plt.subplots(n_rows, ncols, figsize=(figsize[0]*ncols, figsize[1]*n_rows))
-    axes = np.array(axes).reshape(-1)  # flatten even if 1D
+    fig, axes = plt.subplots(
+        n_rows, ncols, figsize=(figsize[0] * ncols, figsize[1] * n_rows)
+    )
+    axes = np.array(axes).reshape(-1)
 
     for i, group_col in enumerate(group_cols):
-        plot_error_by_group(df, target_col, pred_col, group_col, bins=bins, ax=axes[i])
+        plot_error_by_group(
+            df, target_col, pred_col, group_col, bins=bins, ax=axes[i]
+        )
 
-    # Hide any extra axes
     for j in range(len(group_cols), len(axes)):
         fig.delaxes(axes[j])
 
     plt.tight_layout()
     plt.show()
+    return fig
 
 def plot_target_vs_predictors(
     df, target, predictors, bins: int = 10,

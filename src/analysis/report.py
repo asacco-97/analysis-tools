@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Dict
+from typing import Any, Dict, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
+from . import plots, tabulation
 
 
 def fig_to_base64_png(fig: plt.Figure) -> str:
@@ -278,6 +280,8 @@ def generate_model_analysis_report(
     lift_kwargs: Dict[str, Any] | None = None,
     residual_kwargs: Dict[str, Any] | None = None,
     dev_residual_kwargs: Dict[str, Any] | None = None,
+    error_group_cols: Iterable[str] | None = None,
+    tabulation_vars: Iterable[str] | None = None,
     title: str | None = None,
 ) -> None:
     """Generate a full HTML model analysis report."""
@@ -348,6 +352,30 @@ def generate_model_analysis_report(
         )
         html_output += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_base64_png(fig_avg_resid)}</div>"
     html_output += "</div>"
+
+    if error_group_cols:
+        html_output += "<h2>Error by Group</h2><div style='display:flex;flex-wrap:wrap'>"
+        for split_value in df[split_col].unique():
+            df_split = df[df[split_col] == split_value].copy()
+            fig_err = plots.plot_error_by_group_grid(
+                df_split,
+                actual_col,
+                predicted_col,
+                error_group_cols,
+            )
+            html_output += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_base64_png(fig_err)}</div>"
+        html_output += "</div>"
+
+    if tabulation_vars:
+        html_output += "<h2>Tabulations</h2>"
+        html_output += tabulation.generate_tabulations_html(
+            df,
+            prediction_col=predicted_col,
+            truth_col=actual_col,
+            group_vars=list(tabulation_vars),
+            split_col=split_col,
+            weights_col=exposure_col,
+        )
 
     html_output += "</body></html>"
 
