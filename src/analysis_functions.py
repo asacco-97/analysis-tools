@@ -94,7 +94,7 @@ def plot_auc_curves(
             linewidth=linewidth,
         )
 
-    # Random chance on diagnol
+    # Random chance on diagonal
     plt.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
 
     plt.xlabel("False Positive Rate")
