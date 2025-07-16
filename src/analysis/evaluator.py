@@ -73,6 +73,18 @@ class ModelEvaluator:
             **kwargs,
         )
 
+    def plot_partial_gini(self, top_percent: int = 20, **kwargs) -> Any:
+        """Plot the partial Gini curve for the top ``top_percent`` of exposure."""
+        return report.partial_gini_plot(
+            self.data,
+            self.actual_col,
+            self.predicted_col,
+            exposure_col=self.exposure_col,
+            split_name=None,
+            top_percent=top_percent,
+            **kwargs,
+        )
+
     def plot_error_by_group_grid(self, group_cols: Iterable[str], **kwargs) -> Any:
         """Plot prediction error by multiple grouping variables."""
         return plots.plot_error_by_group_grid(

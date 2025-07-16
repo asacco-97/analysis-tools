@@ -280,6 +280,87 @@ def crunched_residual_plot(
     return fig
 
 
+def partial_gini_plot(
+    df: pd.DataFrame,
+    actual_col: str,
+    predicted_col: str,
+    *,
+    exposure_col: str | None = None,
+    top_percent: int = 20,
+    figsize: tuple[int, int] = (8, 6),
+    split_name: str | None = None,
+    title: str | None = None,
+) -> plt.Figure:
+    """Return a Lorenz curve highlighting the partial Gini at ``top_percent``."""
+    df = df.copy()
+
+    if exposure_col:
+        df["weighted_actual"] = df[actual_col] * df[exposure_col]
+        df["exposure"] = df[exposure_col]
+    else:
+        df["weighted_actual"] = df[actual_col]
+        df["exposure"] = 1
+
+    df.sort_values(predicted_col, ascending=False, inplace=True)
+    df["cum_exposure"] = df["exposure"].cumsum() / df["exposure"].sum()
+    df["cum_actual"] = df["weighted_actual"].cumsum() / df["weighted_actual"].sum()
+
+    pop = np.insert(df["cum_exposure"].values, 0, 0)
+    cum = np.insert(df["cum_actual"].values, 0, 0)
+
+    df_perfect = df.sort_values("weighted_actual", ascending=False).copy()
+    df_perfect["cum_exposure"] = df_perfect["exposure"].cumsum() / df_perfect["exposure"].sum()
+    df_perfect["cum_actual"] = df_perfect["weighted_actual"].cumsum() / df_perfect["weighted_actual"].sum()
+    perf_pop = np.insert(df_perfect["cum_exposure"].values, 0, 0)
+    perf_cum = np.insert(df_perfect["cum_actual"].values, 0, 0)
+
+    def _partial(population: np.ndarray, cumulative: np.ndarray) -> tuple[float, float, float]:
+        cutoff = top_percent / 100
+        idx = np.searchsorted(population, cutoff, side="right")
+        pop_cut = population[:idx]
+        cum_cut = cumulative[:idx]
+        if len(pop_cut) == 0 or pop_cut[-1] < cutoff:
+            pop_cut = np.append(pop_cut, cutoff)
+            cum_cut = np.append(cum_cut, np.interp(cutoff, population, cumulative))
+        area_under_curve = np.trapz(cum_cut, x=pop_cut)
+        equality_area = (cutoff ** 2) / 2
+        gini = (area_under_curve - equality_area) / (1 - equality_area)
+        return gini, equality_area, area_under_curve
+
+    pgini, _, _ = _partial(pop, cum)
+    pgini_perfect, _, _ = _partial(perf_pop, perf_cum)
+    normalized_pgini = pgini / pgini_perfect if pgini_perfect != 0 else 0
+
+    effective_title = title or "Partial Gini"
+    if split_name:
+        effective_title += f" ({split_name})"
+    effective_title += f"\nGini={pgini:.3f}, Norm Gini={normalized_pgini:.3f}"
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(pop * 100, cum * 100, label="Model", color="blue")
+    ax.plot(perf_pop * 100, perf_cum * 100, color="green", linestyle="--", label="Perfect")
+    ax.plot([0, 100], [0, 100], "--", color="gray", label="Random")
+    ax.axvline(top_percent, color="red", linestyle="--", label=f"Top {top_percent}%")
+
+    cutoff_idx = np.searchsorted(pop, top_percent / 100, side="right")
+    ax.fill_between(
+        pop[:cutoff_idx] * 100,
+        cum[:cutoff_idx] * 100,
+        pop[:cutoff_idx] * 100,
+        color="orange",
+        alpha=0.3,
+        label="Partial Gini Area",
+    )
+
+    ax.set_title(effective_title, fontsize=14)
+    ax.set_xlabel("Cumulative % of Exposure")
+    ax.set_ylabel("Cumulative % of Loss")
+    ax.legend(frameon=True)
+    ax.grid(True, linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    return fig
+
+
 # --- Report assembly --------------------------------------------------------
 
 def generate_model_analysis_report(
