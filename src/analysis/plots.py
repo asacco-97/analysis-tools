@@ -123,7 +123,7 @@ def plot_error_by_group(df, target_col, pred_col, group_col, bins=10, ax=None):
     data.rename(columns={group_col_final: group_col + " Bin"}, inplace=True)
     group_col_final = group_col + " Bin"
 
-    grouped = data.groupby(group_col_final).agg(
+    grouped = data.groupby(group_col_final, observed=False).agg(
         actual_mean=(target_col, 'mean'),
         predicted_mean=(pred_col, 'mean'),
         count=(target_col, 'count')
@@ -154,7 +154,7 @@ def plot_error_by_group(df, target_col, pred_col, group_col, bins=10, ax=None):
     )
     ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
     ax2.set_xlabel(f'{group_col}', color='black')
-    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=45, ha='right')
+    ax1.tick_params(axis='x', rotation=45)
     ax1.set_title(f'Error by {group_col}')
 
 def plot_error_by_group_grid(df, target_col, pred_col, group_cols, bins=10, ncols=2, figsize=(6, 4)):
@@ -197,7 +197,9 @@ def plot_target_vs_predictors(
 
     fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
 
-    palette = sns.color_palette("tab10")
+    if group_col:
+        unique_groups = df[group_col].unique()
+        palette = sns.color_palette("tab10", n_colors=len(unique_groups))
 
     for i, col in enumerate(predictors):
         block = i // n_cols
@@ -242,7 +244,7 @@ def plot_target_vs_predictors(
                 )
         else:
             agg = df_temp.groupby("bin").agg(avg_target=(target, "mean")).reset_index()
-            sns.lineplot(data=agg, x="bin", y="avg_target", marker="o", ax=ax_line, color="black")
+            sns.lineplot(data=agg, x="bin", y="avg_target", marker="o", ax=ax_line, color="black", label="")
 
         ax_line.set_ylabel(f"Average {target}")
         ax_line.set_xlabel("")
@@ -296,9 +298,9 @@ def plot_target_vs_predictors(
                     data=bar_data, x="bin", y="count",
                     ax=ax_bar, dodge=True, color="steelblue"
                 )
-                ax_bar.legend().remove()
 
         ax_bar.set_xlabel("")
+        ax_bar.set_xticks(ax_bar.get_xticks())  # lock in current positions
         ax_bar.set_xticklabels(ax_bar.get_xticklabels(), rotation=45, ha="right")
 
         # Create grid lines and pad y limits
