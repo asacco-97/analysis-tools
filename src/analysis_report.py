@@ -9,3 +9,4 @@ gain_curve_with_gini = report.gain_curve_with_gini
 lift_chart = report.lift_chart
 crunched_residual_plot = report.crunched_residual_plot
 fig_to_base64_png = report.fig_to_base64_png
+partial_gini_plot = report.partial_gini_plot
