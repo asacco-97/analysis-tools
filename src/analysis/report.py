@@ -334,11 +334,11 @@ def partial_gini_plot(
     effective_title = title or "Partial Gini"
     if split_name:
         effective_title += f" ({split_name})"
-    effective_title += f"\nGini={pgini:.3f}, Norm Gini={normalized_pgini:.3f}"
+    effective_title += f"\nRaw and Normalized Partial Gini at Top {top_percent}% = {pgini:.3f}, {normalized_pgini:.3f}"
 
     fig, ax = plt.subplots(figsize=figsize)
     ax.plot(pop * 100, cum * 100, label="Model", color="blue")
-    ax.plot(perf_pop * 100, perf_cum * 100, color="green", linestyle="--", label="Perfect")
+    ax.plot(perf_pop * 100, perf_cum * 100, color="green", label="Perfect")
     ax.plot([0, 100], [0, 100], "--", color="gray", label="Random")
     ax.axvline(top_percent, color="red", linestyle="--", label=f"Top {top_percent}%")
 
@@ -347,7 +347,7 @@ def partial_gini_plot(
         pop[:cutoff_idx] * 100,
         cum[:cutoff_idx] * 100,
         pop[:cutoff_idx] * 100,
-        color="orange",
+        color="blue",
         alpha=0.3,
         label="Partial Gini Area",
     )
