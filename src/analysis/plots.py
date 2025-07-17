@@ -14,169 +14,6 @@ from sklearn.metrics import auc, roc_curve
 
 from .utils import tweedie_deviance_residuals
 
-def cumulative_gain_plot(model) -> pd.DataFrame:
-    """Return cumulative gain DataFrame and plot cumulative gain curve."""
-    importance = model.get_score(importance_type="gain")
-    importance_df = pd.DataFrame(list(importance.items()), columns=["Feature", "Gain"])
-
-    total_gain = importance_df["Gain"].sum()
-    importance_df["Percent_Gain"] = importance_df["Gain"] / total_gain * 100
-    importance_df = importance_df.sort_values("Percent_Gain")
-    importance_df["Cumulative_Gain"] = importance_df["Percent_Gain"].cumsum()
-
-    plt.figure(figsize=(8, 4))
-    plt.plot(importance_df["Feature"], importance_df["Cumulative_Gain"], marker="o")
-    plt.axhline(1, linestyle="--", color="red")
-    plt.xlabel("Features")
-    plt.ylabel("Cumulative Gain (%)")
-    plt.title("Cumulative Gain Contribution")
-    plt.xticks(rotation=90)
-    plt.grid(True)
-    plt.show()
-
-    return importance_df
-
-
-def percent_gain_plot(model) -> pd.DataFrame:
-    """Return percent gain DataFrame and plot bar chart of percent gain."""
-    importance = model.get_score(importance_type="gain")
-    importance_df = pd.DataFrame(list(importance.items()), columns=["Feature", "Gain"])
-
-    total_gain = importance_df["Gain"].sum()
-    importance_df["Percent_Gain"] = importance_df["Gain"] / total_gain * 100
-    importance_df = importance_df.sort_values("Percent_Gain", ascending=True)
-
-    plt.figure(figsize=(10, 6))
-    plt.barh(importance_df["Feature"], importance_df["Percent_Gain"])
-    plt.axvline(1, color="red", linestyle="--")
-    plt.xlabel("Percent Gain (%)")
-    plt.ylabel("Features")
-    plt.title("Percent Gain by Feature")
-    plt.grid(True)
-    plt.show()
-
-    return importance_df
-
-
-def plot_auc_curves(
-    y_true: Sequence[float],
-    proba_dict: Dict[str, Sequence[float]] | Sequence[float],
-    title: str = "ROC Curves",
-    figsize: tuple[int, int] = (7, 4),
-    linewidth: float = 2.0,
-    cmap: str = "tab10",
-) -> Dict[str, float]:
-    """Plot ROC curves for one or multiple models and return AUC scores."""
-    if not isinstance(proba_dict, dict):
-        proba_dict = {"Model": proba_dict}
-
-    colors = plt.get_cmap(cmap).colors
-
-    plt.figure(figsize=figsize)
-    auc_scores: Dict[str, float] = {}
-
-    for idx, (name, y_proba) in enumerate(proba_dict.items()):
-        fpr, tpr, _ = roc_curve(y_true, y_proba)
-        score = auc(fpr, tpr)
-        auc_scores[name] = score
-
-        plt.plot(
-            fpr,
-            tpr,
-            label=f"{name} (AUC = {score:.4f})",
-            color=colors[idx % len(colors)],
-            linewidth=linewidth,
-        )
-
-    plt.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
-
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title(title)
-    plt.legend(loc="lower right", frameon=True)
-    plt.grid(True, linestyle=":", linewidth=0.5)
-    plt.tight_layout()
-    plt.show()
-
-    return auc_scores
-
-
-def plot_error_by_group(df, target_col, pred_col, group_col, bins=10, ax=None):
-    """
-    Plot prediction mean, target mean, and count by a grouping variable on a given axis.
-    """
-    data = df.copy()
-
-    # Bin numeric group variable
-    if pd.api.types.is_numeric_dtype(data[group_col]):
-        binning = pd.qcut(data[group_col], q=bins, duplicates='drop')
-        data["bin"] = binning
-        bin_means = data.groupby("bin")[group_col].mean()
-        label_map = {interval: f"{mean:.2f}" for interval, mean in bin_means.items()}
-        data["bin_label"] = data["bin"].map(label_map)
-        ordered_labels = [label_map[b] for b in bin_means.index]
-        group_col_final = "bin_label"
-    else:
-        group_col_final = group_col
-        ordered_labels = sorted(data[group_col].dropna().unique())
-
-    # Group by label
-    data.rename(columns={group_col_final: group_col + " Bin"}, inplace=True)
-    group_col_final = group_col + " Bin"
-
-    grouped = data.groupby(group_col_final, observed=False).agg(
-        actual_mean=(target_col, 'mean'),
-        predicted_mean=(pred_col, 'mean'),
-        count=(target_col, 'count')
-    ).reindex(ordered_labels).reset_index()
-
-    # Use provided axis or fallback to new figure
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(9, 4))
-    ax1 = ax
-
-    # Bar plot for count (primary y-axis)
-    sns.barplot(
-        data=grouped, x=group_col_final, y='count', alpha=0.3,
-        ax=ax1, color='steelblue', order=ordered_labels
-    )
-    ax1.set_ylabel('Count', color='steelblue')
-    ax1.tick_params(axis='y', labelcolor='steelblue')
-
-    # Line plots for predicted and actual (secondary y-axis)
-    ax2 = ax1.twinx()
-    sns.lineplot(
-        data=grouped, x=group_col_final, y='predicted_mean',
-        ax=ax2, marker='o', label='Pred Mean'
-    )
-    sns.lineplot(
-        data=grouped, x=group_col_final, y='actual_mean',
-        ax=ax2, marker='s', label='Actual Mean'
-    )
-    ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
-    ax2.set_xlabel(f'{group_col}', color='black')
-    ax1.tick_params(axis='x', rotation=45)
-    ax1.set_title(f'Error by {group_col}')
-
-def plot_error_by_group_grid(df, target_col, pred_col, group_cols, bins=10, ncols=2, figsize=(6, 4)):
-    """
-    Plot prediction error and count by multiple group columns using shared grid layout.
-    Calls `plot_error_by_group` for each plot.
-    """
-    n_rows = -(-len(group_cols) // ncols)  # ceiling division
-    fig, axes = plt.subplots(n_rows, ncols, figsize=(figsize[0]*ncols, figsize[1]*n_rows))
-    axes = np.array(axes).reshape(-1)  # flatten even if 1D
-
-    for i, group_col in enumerate(group_cols):
-        plot_error_by_group(df, target_col, pred_col, group_col, bins=bins, ax=axes[i])
-
-    # Hide any extra axes
-    for j in range(len(group_cols), len(axes)):
-        fig.delaxes(axes[j])
-
-    plt.tight_layout()
-    plt.show()
-
 def plot_target_vs_predictors(
     df, target, predictors, bins: int = 10,
     weight_col: str = None, group_col: str = None
@@ -341,6 +178,226 @@ def plot_variable_distributions(df: pd.DataFrame, variables: Iterable[str], bins
 
     plt.tight_layout()
     plt.show()
+
+# --- Model Evaluation Plots ---------------------------------------------------
+def cumulative_gain_plot(model) -> pd.DataFrame:
+    """Return cumulative gain DataFrame and plot cumulative gain curve."""
+    importance = model.get_score(importance_type="gain")
+    importance_df = pd.DataFrame(list(importance.items()), columns=["Feature", "Gain"])
+
+    total_gain = importance_df["Gain"].sum()
+    importance_df["Percent_Gain"] = importance_df["Gain"] / total_gain * 100
+    importance_df = importance_df.sort_values("Percent_Gain")
+    importance_df["Cumulative_Gain"] = importance_df["Percent_Gain"].cumsum()
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(importance_df["Feature"], importance_df["Cumulative_Gain"], marker="o")
+    plt.axhline(1, linestyle="--", color="red")
+    plt.xlabel("Features")
+    plt.ylabel("Cumulative Gain (%)")
+    plt.title("Cumulative Gain Contribution")
+    plt.xticks(rotation=90)
+    plt.grid(True)
+    plt.show()
+
+    return importance_df
+
+def percent_gain_plot(model) -> pd.DataFrame:
+    """Return percent gain DataFrame and plot bar chart of percent gain."""
+    importance = model.get_score(importance_type="gain")
+    importance_df = pd.DataFrame(list(importance.items()), columns=["Feature", "Gain"])
+
+    total_gain = importance_df["Gain"].sum()
+    importance_df["Percent_Gain"] = importance_df["Gain"] / total_gain * 100
+    importance_df = importance_df.sort_values("Percent_Gain", ascending=True)
+
+    plt.figure(figsize=(10, 6))
+    plt.barh(importance_df["Feature"], importance_df["Percent_Gain"])
+    plt.axvline(1, color="red", linestyle="--")
+    plt.xlabel("Percent Gain (%)")
+    plt.ylabel("Features")
+    plt.title("Percent Gain by Feature")
+    plt.grid(True)
+    plt.show()
+
+    return importance_df
+
+def plot_auc_curves(
+    y_true: Sequence[float],
+    proba_dict: Dict[str, Sequence[float]] | Sequence[float],
+    title: str = "ROC Curves",
+    figsize: tuple[int, int] = (7, 4),
+    linewidth: float = 2.0,
+    cmap: str = "tab10",
+) -> Dict[str, float]:
+    """Plot ROC curves for one or multiple models and return AUC scores."""
+    if not isinstance(proba_dict, dict):
+        proba_dict = {"Model": proba_dict}
+
+    colors = plt.get_cmap(cmap).colors
+
+    plt.figure(figsize=figsize)
+    auc_scores: Dict[str, float] = {}
+
+    for idx, (name, y_proba) in enumerate(proba_dict.items()):
+        fpr, tpr, _ = roc_curve(y_true, y_proba)
+        score = auc(fpr, tpr)
+        auc_scores[name] = score
+
+        plt.plot(
+            fpr,
+            tpr,
+            label=f"{name} (AUC = {score:.4f})",
+            color=colors[idx % len(colors)],
+            linewidth=linewidth,
+        )
+
+    plt.plot([0, 1], [0, 1], linestyle="--", color="gray", linewidth=1)
+
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(title)
+    plt.legend(loc="lower right", frameon=True)
+    plt.grid(True, linestyle=":", linewidth=0.5)
+    plt.tight_layout()
+    plt.show()
+
+    return auc_scores
+
+def plot_error_by_group(
+    df: pd.DataFrame,
+    actual_col: str,
+    predicted_col: str,
+    *,
+    group_col: str,
+    bins: int = 10,
+    title: str | None = None,
+    split_name: str | None = None,
+    exposure_col: str | None = None,
+    figsize: tuple[int, int] = (8, 4),
+) -> plt.Figure:
+    data = df.copy()
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if pd.api.types.is_numeric_dtype(data[group_col]):
+        binning = pd.qcut(data[group_col], q=bins, duplicates='drop')
+        data["bin"] = binning
+        bin_means = data.groupby("bin")[group_col].mean()
+        label_map = {interval: f"{mean:.2f}" for interval, mean in bin_means.items()}
+        data["bin_label"] = data["bin"].map(label_map)
+        ordered_labels = [label_map[b] for b in bin_means.index]
+        group_col_final = "bin_label"
+    else:
+        group_col_final = group_col
+        ordered_labels = sorted(data[group_col].dropna().unique())
+
+    data.rename(columns={group_col_final: group_col + " Bin"}, inplace=True)
+    group_col_final = group_col + " Bin"
+
+    grouped = data.groupby(group_col_final, observed=False).agg(
+        actual_mean=(actual_col, 'mean'),
+        predicted_mean=(predicted_col, 'mean'),
+        count=(actual_col, 'count')
+    ).reindex(ordered_labels).reset_index()
+
+    ax1 = ax
+    sns.barplot(
+        data=grouped, x=group_col_final, y='count', alpha=0.3,
+        ax=ax1, color='steelblue', order=ordered_labels
+    )
+    ax1.set_ylabel('Count', color='steelblue')
+    ax1.tick_params(axis='y', labelcolor='steelblue')
+
+    ax2 = ax1.twinx()
+    sns.lineplot(
+        data=grouped, x=group_col_final, y='predicted_mean',
+        ax=ax2, marker='o', label='Pred Mean'
+    )
+    sns.lineplot(
+        data=grouped, x=group_col_final, y='actual_mean',
+        ax=ax2, marker='s', label='Actual Mean'
+    )
+    ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
+    ax1.set_xlabel(f'{group_col}', color='black')
+    ax1.tick_params(axis='x', rotation=45)
+
+    effective_title = title or "Error by Group"
+    if split_name:
+        effective_title += f" ({split_name})"
+    ax1.set_title(effective_title)
+    return fig
+
+
+def plot_error_by_group_grid(
+    df: pd.DataFrame,
+    actual_col: str,
+    predicted_col: str,
+    *,
+    group_cols: list[str],
+    bins: int = 10,
+    title: str | None = None,
+    split_name: str | None = None,
+    exposure_col: str | None = None,
+    ncols: int = 2,
+    figsize: tuple[int, int] = (6, 4),
+) -> plt.Figure:
+    n_rows = -(-len(group_cols) // ncols)
+    fig, axes = plt.subplots(n_rows, ncols, figsize=(figsize[0]*ncols, figsize[1]*n_rows))
+    axes = np.array(axes).reshape(-1)
+
+    for i, group_col in enumerate(group_cols):
+        data = df.copy()
+        ax = axes[i]
+
+        if pd.api.types.is_numeric_dtype(data[group_col]):
+            binning = pd.qcut(data[group_col], q=bins, duplicates='drop')
+            data["bin"] = binning
+            bin_means = data.groupby("bin")[group_col].mean()
+            label_map = {interval: f"{mean:.2f}" for interval, mean in bin_means.items()}
+            data["bin_label"] = data["bin"].map(label_map)
+            ordered_labels = [label_map[b] for b in bin_means.index]
+            group_col_final = "bin_label"
+        else:
+            group_col_final = group_col
+            ordered_labels = sorted(data[group_col].dropna().unique())
+
+        data.rename(columns={group_col_final: group_col + " Bin"}, inplace=True)
+        group_col_final = group_col + " Bin"
+
+        grouped = data.groupby(group_col_final, observed=False).agg(
+            actual_mean=(actual_col, 'mean'),
+            predicted_mean=(predicted_col, 'mean'),
+            count=(actual_col, 'count')
+        ).reindex(ordered_labels).reset_index()
+
+        ax1 = ax
+        sns.barplot(
+            data=grouped, x=group_col_final, y='count', alpha=0.3,
+            ax=ax1, color='steelblue', order=ordered_labels
+        )
+        ax1.set_ylabel('Count', color='steelblue')
+        ax1.tick_params(axis='y', labelcolor='steelblue')
+
+        ax2 = ax1.twinx()
+        sns.lineplot(
+            data=grouped, x=group_col_final, y='predicted_mean',
+            ax=ax2, marker='o', label='Pred Mean'
+        )
+        sns.lineplot(
+            data=grouped, x=group_col_final, y='actual_mean',
+            ax=ax2, marker='s', label='Actual Mean'
+        )
+        ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
+        ax1.set_xlabel(f'{group_col}', color='black')
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.set_title(f"{group_col} ({split_name})" if split_name else group_col)
+
+    for j in range(len(group_cols), len(axes)):
+        fig.delaxes(axes[j])
+
+    fig.suptitle(title or "Error by Groups", fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    return fig
 
 def plot_residual_fit(
     df: pd.DataFrame,
@@ -584,10 +641,10 @@ def partial_gini_plot(
     predicted_col: str,
     *,
     exposure_col: str | None = None,
-    top_percent: int = 20,
-    figsize: tuple[int, int] = (8, 6),
     split_name: str | None = None,
     title: str | None = None,
+    top_percent: int = 20,
+    figsize: tuple[int, int] = (8, 6),
 ) -> plt.Figure:
     """Return a Lorenz curve highlighting the partial Gini at ``top_percent``."""
     df = df.copy()

@@ -37,10 +37,10 @@ class ModelAnalysisReport:
         for split_value in self.df[self.split_col].unique():
             df_split = self.df[self.df[self.split_col] == split_value].copy()
             fig = plot_func(
-                df_split,
-                self.actual_col,
-                self.predicted_col,
-                self.exposure_col,
+                df=df_split,
+                actual_col=self.actual_col,
+                predicted_col=self.predicted_col,
+                exposure_col=self.exposure_col,
                 split_name=split_value,
                 title=self.title,
                 **kwargs,
