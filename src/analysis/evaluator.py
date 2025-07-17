@@ -44,7 +44,7 @@ class ModelEvaluator:
     # ------------------------------------------------------------------
     # Plots
     def plot_gain(self, **kwargs) -> Any:
-        return report.gain_curve_with_gini(
+        return plots.gain_curve_with_gini(
             self.data,
             self.actual_col,
             self.predicted_col,
@@ -54,7 +54,7 @@ class ModelEvaluator:
         )
 
     def plot_lift(self, **kwargs) -> Any:
-        return report.lift_chart(
+        return plots.lift_chart(
             self.data,
             self.actual_col,
             self.predicted_col,
@@ -64,7 +64,7 @@ class ModelEvaluator:
         )
 
     def plot_residuals(self, **kwargs) -> Any:
-        return report.crunched_residual_plot(
+        return plots.crunched_residual_plot(
             self.data,
             self.actual_col,
             self.predicted_col,
@@ -75,7 +75,7 @@ class ModelEvaluator:
 
     def plot_partial_gini(self, top_percent: int = 20, **kwargs) -> Any:
         """Plot the partial Gini curve for the top ``top_percent`` of exposure."""
-        return report.partial_gini_plot(
+        return plots.partial_gini_plot(
             self.data,
             self.actual_col,
             self.predicted_col,
