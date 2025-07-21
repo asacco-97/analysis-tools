@@ -1,12 +1,12 @@
 """Backwards compatibility shim for report utilities."""
-from analysis import report
+from analysis import plots, report, utils
 
 generate_model_analysis_report = report.generate_model_analysis_report
 
-tweedie_deviance_residuals = report.tweedie_deviance_residuals
-plot_deviance_residuals = report.plot_deviance_residuals
-gain_curve_with_gini = report.gain_curve_with_gini
-lift_chart = report.lift_chart
-crunched_residual_plot = report.crunched_residual_plot
-fig_to_base64_png = report.fig_to_base64_png
-partial_gini_plot = report.partial_gini_plot
+tweedie_deviance_residuals = utils.tweedie_deviance_residuals
+plot_deviance_residuals = plots.plot_residual_fit
+gain_curve_with_gini = plots.gain_curve_with_gini
+lift_chart = plots.lift_chart
+crunched_residual_plot = plots.crunched_residual_plot
+fig_to_base64_png = utils.fig_to_base64_png
+partial_gini_plot = plots.partial_gini_plot
