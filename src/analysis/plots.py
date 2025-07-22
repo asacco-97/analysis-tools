@@ -274,7 +274,7 @@ def plot_error_by_group(
     title: str | None = None,
     split_name: str | None = None,
     exposure_col: str | None = None,
-    figsize: tuple[int, int] = (8, 4),
+    figsize: tuple[int, int] = (10, 6),
 ) -> plt.Figure:
     data = df.copy()
     fig, ax = plt.subplots(figsize=figsize)
@@ -317,6 +317,7 @@ def plot_error_by_group(
         data=grouped, x=group_col_final, y='actual_mean',
         ax=ax2, marker='s', label='Actual Mean'
     )
+    ax2.grid(True, axis='y', linestyle='-', color="black", alpha=0.6)
     ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
     ax1.set_xlabel(f'{group_col}', color='black')
     ax1.tick_params(axis='x', rotation=45)
@@ -339,7 +340,7 @@ def plot_error_by_group_grid(
     split_name: str | None = None,
     exposure_col: str | None = None,
     ncols: int = 2,
-    figsize: tuple[int, int] = (6, 4),
+    figsize: tuple[int, int] = (8, 6),
 ) -> plt.Figure:
     n_rows = -(-len(group_cols) // ncols)
     fig, axes = plt.subplots(n_rows, ncols, figsize=(figsize[0]*ncols, figsize[1]*n_rows))
@@ -388,6 +389,7 @@ def plot_error_by_group_grid(
             ax=ax2, marker='s', label='Actual Mean'
         )
         ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
+        ax2.grid(True, axis='y', linestyle='-', color="black", alpha=0.6)
         ax1.set_xlabel(f'{group_col}', color='black')
         ax1.tick_params(axis='x', rotation=45)
         ax1.set_title(f"{group_col} ({split_name})" if split_name else group_col)

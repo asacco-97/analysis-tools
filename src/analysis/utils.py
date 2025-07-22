@@ -6,6 +6,7 @@ import io
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 
 def fig_to_base64_png(fig: plt.Figure) -> str:
@@ -36,3 +37,22 @@ def tweedie_deviance_residuals(y: np.ndarray, mu: np.ndarray, p: float) -> np.nd
     deviance = 2 * term1
     residuals = np.sign(y - mu) * np.sqrt(np.abs(deviance))
     return residuals
+
+def format_number(x):
+    if pd.isna(x):
+        return "NA"
+    if abs(x) >= 1_000_000_000:
+        return f"{round(x / 1_000_000_000, 3)}B"
+    if abs(x) >= 1_000_000:
+        return f"{round(x / 1_000_000, 3)}M"
+    elif abs(x) >= 100_000:
+        return f"{int(x / 1_000)}k"
+    elif abs(x) >= 1_000:
+        return f"{round(x / 1_000, 1)}k"
+    else:
+        return str(int(x)) if float(x).is_integer() else str(round(x, 2))
+            
+def format_interval(interval: pd.Interval) -> str:    
+    left = format_number(interval.left)
+    right = format_number(interval.right)
+    return f"({left}, {right}]" if interval.closed_right else f"[{left}, {right})"
