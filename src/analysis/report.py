@@ -168,7 +168,7 @@ class ModelAnalysisReport:
                 title=self.title,
                 **kwargs,
             )
-            html += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_html(fig)}</div>"
+            html += f"<div style='margin:10px'><h4>{split_value} Split</h4>{fig_to_base64_png(fig)}</div>"
         html += "</div>"
         self._sections.append(html)
 
