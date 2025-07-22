@@ -426,7 +426,7 @@ def plot_error_by_group_grid(
         if pd.api.types.is_numeric_dtype(data[group_col]):
             binning = pd.qcut(data[group_col], q=bins, duplicates='drop')
             data["bin"] = binning
-            bin_means = data.groupby("bin")[group_col].mean()
+            bin_means = data.groupby("bin", observed=False)[group_col].mean()
             label_map = {interval: f"{mean:.2f}" for interval, mean in bin_means.items()}
             data["bin_label"] = data["bin"].map(label_map)
             ordered_labels = [label_map[b] for b in bin_means.index]
@@ -517,7 +517,7 @@ def plot_residual_fit(
     df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
 
     # Aggregate
-    grouped = df.groupby("group").agg(
+    grouped = df.groupby("group", observed=False).agg(
         count=(predicted_col, "count"),
         avg_predicted=(predicted_col, "mean"),
         avg_residual=("residual", "mean"),
@@ -632,7 +632,7 @@ def lift_chart(
     df["bin"] = pd.qcut(df[predicted_col], n_bins, duplicates="drop")
 
     grouped = (
-        df.groupby("bin")
+        df.groupby("bin", observed=False)
         .apply(
             lambda g: pd.Series({
                 "Avg Actual": np.average(g[actual_col], weights=g["exposure"]),

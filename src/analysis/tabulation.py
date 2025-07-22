@@ -33,7 +33,7 @@ def generate_and_save_tabulations(
         if factor:
             # Compute group-wise factors
             fct_df = (
-                df_copy.groupby(split_col)
+                df_copy.groupby(split_col, observed=False)
                 .agg(
                     truth_total=("_truth_weighted", "sum"),
                     pred_total=("_pred_weighted", "sum")
@@ -49,7 +49,7 @@ def generate_and_save_tabulations(
             df_copy["_pred_weighted"] *= df_copy["factor"]
 
         grouped = (
-            df_copy.groupby([group_col, split_col])
+            df_copy.groupby([group_col, split_col], observed=False)
             .agg(
                 weight_sum=("_w", "sum"),
                 pred_sum=("_pred_weighted", "sum"),
@@ -191,7 +191,7 @@ def generate_tabulations_html(
             df_copy = df_copy.drop(columns=split_col)
 
         grouped = (
-            df_copy.groupby([group_col, split_col])
+            df_copy.groupby([group_col, split_col], observed=False)
             .agg(
                 weight_sum=("_w", "sum"),
                 pred_sum=("_pred_weighted", "sum"),
