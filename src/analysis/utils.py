@@ -45,8 +45,10 @@ def format_number(x):
         return f"{round(x / 1_000_000_000, 3)}B"
     if abs(x) >= 1_000_000:
         return f"{round(x / 1_000_000, 3)}M"
-    elif abs(x) >= 1_000:
+    elif abs(x) >= 100_000:
         return f"{int(x / 1_000)}k"
+    elif abs(x) >= 1_000:
+        return f"{round(x / 1_000, 1)}k"
     else:
         return str(int(x)) if float(x).is_integer() else str(round(x, 2))
             
