@@ -12,46 +12,31 @@ import numpy as np
 import seaborn as sns
 from sklearn.metrics import auc, roc_curve
 
-from .utils import tweedie_deviance_residuals, format_interval
-
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import seaborn as sns
-import pandas as pd
-import numpy as np
-import math
-
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import math
-from matplotlib import gridspec
+from .utils import tweedie_deviance_residuals
 
 def plot_target_vs_predictors(
-    df: pd.DataFrame,
-    actual_col: str,
-    predicted_col: str,
-    *,
-    exposure_col: str | None = None,
-    split_name: str | None = None,
-    title: str | None = None,
-    predictors: list[str],
-    group_col: str | None = None,
-    bins: int = 10,
-) -> plt.Figure:
+    df, target, predictors, bins: int = 10,
+    weight_col: str = None, group_col: str = None
+):
+    """
+    Plot target averages segmented by group_col, with count/weight bars at bottom.
+    """
     n_preds = len(predictors)
     n_cols = 2 if n_preds <= 4 else 3
     n_rows = math.ceil(n_preds / n_cols)
 
+    # Each predictor gets 3 rows (line, bar, spacer)
     total_rows = n_rows * 3
-    row_heights = [10, 7, 5] * n_rows
+
+    # Set height ratios for each 3-row group
+    row_heights = [7, 4, 6] * n_rows
 
     gs = gridspec.GridSpec(total_rows, n_cols, height_ratios=row_heights, hspace=0.1)
-    fig = plt.figure(figsize=(8 * n_cols, 6 * n_rows))
+
+    fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
 
     if group_col:
-        unique_groups = df[group_col].dropna().unique()
+        unique_groups = df[group_col].unique()
         palette = sns.color_palette("tab10", n_colors=len(unique_groups))
 
     for i, col in enumerate(predictors):
@@ -62,75 +47,107 @@ def plot_target_vs_predictors(
         ax_line = fig.add_subplot(gs[row, col_pos])
         ax_bar = fig.add_subplot(gs[row + 1, col_pos], sharex=ax_line)
 
-        df_temp = df[[col, actual_col]].copy()
-        if exposure_col:
-            df_temp[exposure_col] = df[exposure_col]
+        df_temp = df[[col, target]].copy()
+        if weight_col:
+            df_temp[weight_col] = df[weight_col]
         if group_col:
             df_temp[group_col] = df[group_col]
 
         df_temp = df_temp.dropna()
-        unique_vals = df_temp[col].nunique()
 
+        # Binning numeric features
+        unique_vals = df[col].nunique()
         if pd.api.types.is_numeric_dtype(df[col]) and unique_vals > 30:
             df_temp["bin"] = pd.qcut(df_temp[col], bins, duplicates="drop")
-            df_temp["bin"] = df_temp["bin"].cat.remove_unused_categories()
-            df_temp["bin_label"] = df_temp["bin"].apply(format_interval)
         else:
             df_temp["bin"] = df_temp[col].astype(str)
             if unique_vals > bins:
                 top_vals = df_temp["bin"].value_counts().nlargest(bins).index
                 df_temp["bin"] = df_temp["bin"].apply(lambda x: x if x in top_vals else "Other")
-            df_temp["bin_label"] = df_temp["bin"].astype(str)
 
+        df_temp["bin"] = df_temp["bin"].astype(str)
+
+        # Line: target average by group
         if group_col:
             for j, (group_val, sub_df) in enumerate(df_temp.groupby(group_col)):
-                agg = sub_df.groupby("bin_label").agg(avg_target=(actual_col, "mean")).reset_index()
-                sns.lineplot(data=agg, x="bin_label", y="avg_target", marker="o",
-                             label=str(group_val), ax=ax_line, color=palette[j])
-            ax_line.legend(title=group_col)
+                agg = sub_df.groupby("bin").agg(avg_target=(target, "mean")).reset_index()
+                sns.lineplot(data=agg, x="bin", y="avg_target", marker="o", label=str(group_val), ax=ax_line, color=palette[j])
+                
+                # Ensure that legend has a title
+                handles, labels = ax_line.get_legend_handles_labels()
+                ax_line.legend(
+                    handles=handles,
+                    labels=labels,
+                    title=group_col,  
+                )
         else:
-            agg = df_temp.groupby("bin_label").agg(avg_target=(actual_col, "mean")).reset_index()
-            sns.lineplot(data=agg, x="bin_label", y="avg_target", marker="o",
-                         ax=ax_line, color="black", label="")
+            agg = df_temp.groupby("bin").agg(avg_target=(target, "mean")).reset_index()
+            sns.lineplot(data=agg, x="bin", y="avg_target", marker="o", ax=ax_line, color="black", label="")
 
-        ax_line.set_ylabel(f"Average {actual_col}")
+        ax_line.set_ylabel(f"Average {target}")
         ax_line.set_xlabel("")
-        ax_line.set_title(f"{actual_col} by {col}")
+        ax_line.set_title(f"{target} by {col}")
         ax_line.tick_params(axis='x', labelbottom=False)
+
+        # Create grid lines and pad y limits
         ax_line.grid(True, axis='y', linestyle='--', alpha=0.6)
-        ax_line.set_ylim(ax_line.get_ylim()[0] * 0.9, ax_line.get_ylim()[1] * 1.1)
+        ax_line.set_ylim(ax_line.get_ylim()[0] * 0.9, ax_line.get_ylim()[1] * 1.1)  # add 10% padding on top and bottom
         ax_line.yaxis.set_major_locator(plt.MaxNLocator(nbins=6))
 
-        if exposure_col:
+        # Bar: count or weight
+        if weight_col:
             if group_col:
-                bar_data = df_temp.groupby(["bin_label", group_col])[exposure_col].sum().reset_index()
-                sns.barplot(data=bar_data, x="bin_label", y=exposure_col, hue=group_col,
-                            ax=ax_bar, dodge=True, palette=palette)
+                bar_data = (
+                    df_temp.groupby(["bin", group_col])[weight_col]
+                    .sum()
+                    .reset_index()
+                )
+                sns.barplot(
+                    data=bar_data, x="bin", y=weight_col, hue=group_col,
+                    ax=ax_bar, dodge=True, palette=palette
+                )
                 ax_bar.legend().remove()
             else:
-                bar_data = df_temp.groupby("bin_label")[exposure_col].sum().reset_index(name="weight")
-                sns.barplot(data=bar_data, x="bin_label", y="weight", ax=ax_bar, color="steelblue")
+                bar_data = (
+                    df_temp.groupby("bin")[weight_col]
+                    .sum()
+                    .reset_index(name="weight")
+                )
+                sns.barplot(data=bar_data, x="bin", y="weight", ax=ax_bar, color="steelblue")
         else:
             if group_col:
-                bar_data = df_temp.groupby(["bin_label", group_col])[actual_col].count().reset_index(name="count")
-                sns.barplot(data=bar_data, x="bin_label", y="count", hue=group_col,
-                            ax=ax_bar, dodge=True, palette=palette)
+                bar_data = (
+                    df_temp.groupby(["bin", group_col])[target]
+                    .count()
+                    .reset_index(name="count")
+                )
+                sns.barplot(
+                    data=bar_data, x="bin", y="count", hue=group_col,
+                    ax=ax_bar, dodge=True, palette=palette
+                )
                 ax_bar.legend().remove()
             else:
-                bar_data = df_temp.groupby("bin_label")[actual_col].count().reset_index(name="count")
-                sns.barplot(data=bar_data, x="bin_label", y="count", ax=ax_bar, color="steelblue")
+                bar_data = (
+                    df_temp.groupby("bin")[target]
+                    .count()
+                    .reset_index(name="count")
+                )
+                sns.barplot(
+                    data=bar_data, x="bin", y="count",
+                    ax=ax_bar, dodge=True, color="steelblue"
+                )
 
         ax_bar.set_xlabel("")
-        ax_bar.set_xticks(ax_bar.get_xticks())
+        ax_bar.set_xticks(ax_bar.get_xticks())  # lock in current positions
         ax_bar.set_xticklabels(ax_bar.get_xticklabels(), rotation=45, ha="right")
+
+        # Create grid lines and pad y limits
         ax_bar.grid(True, axis='y', linestyle='--', alpha=0.6)
         ax_bar.set_ylim(0, ax_bar.get_ylim()[1] * 1.1)
         ax_bar.yaxis.set_major_locator(plt.MaxNLocator(nbins=4))
 
     plt.subplots_adjust(hspace=0.15, wspace=0.3)
-    fig.suptitle(title or f"{actual_col} vs Predictors" + (f" ({split_name})" if split_name else ""), fontsize=16)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
-    return fig
+    plt.show()
 
 def plot_variable_distributions(df: pd.DataFrame, variables: Iterable[str], bins: int = 30) -> None:
     """Plot distributions for numeric and categorical variables."""
@@ -163,6 +180,79 @@ def plot_variable_distributions(df: pd.DataFrame, variables: Iterable[str], bins
     plt.show()
 
 # --- Model Evaluation Plots ---------------------------------------------------
+def balanced_spread(
+    df: pd.DataFrame,
+    actual_col: str,
+    predicted_col: str,
+    *,
+    percentiles: Sequence[float | str] = (10, 50, 90, "mean"),
+    split_name: str | None = None,
+    title: str | None = None,
+    exposure_col: str | None = None,
+    figsize: tuple[int, int] = (8, 6),
+    clip_limits: tuple[float, float] | None = None,
+) -> plt.Figure:
+    """Plot actuals vs predictions with reference percentile lines."""
+
+    if len(percentiles) > 6:
+        raise ValueError("`percentiles` can only support up to 6 values!")
+
+    if exposure_col:
+        df[actual_col] = df[actual_col] * df[exposure_col]
+        df[predicted_col] = df[predicted_col] * df[exposure_col]
+        
+    df = df[[actual_col, predicted_col]].dropna()
+    df["balanced_spread"] = np.divide(df[actual_col], df[predicted_col])
+
+    # Set x-limit to 1st and 99th percentiles
+    if clip_limits is None:
+        xmin, xmax = np.percentile(df["balanced_spread"], [1, 99])
+    else:
+        xmin, xmax = clip_limits
+    clipped = df["balanced_spread"].clip(lower=xmin, upper=xmax)
+    
+    # Compute bins using Freedman–Diaconis rule
+    def freedman_diaconis_bins(data: pd.Series) -> int:
+        q25, q75 = np.percentile(data, [25, 75])
+        iqr = q75 - q25
+        bin_width = 2 * iqr / np.cbrt(len(data))
+        if bin_width == 0:
+            return 20  # fallback
+        return int(np.ceil((data.max() - data.min()) / bin_width))
+
+    bins = freedman_diaconis_bins(clipped)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.hist(clipped, bins=bins, color="tab:blue", edgecolor="white", alpha=0.80)
+
+    default_colors = ["tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown", "tab:pink"]
+    color_map = {percentile: default_colors[idx] for idx, percentile in enumerate(percentiles)}
+
+    for i, perc in enumerate(percentiles):
+        perc_str = str(perc).lower()
+        
+        if perc_str == "mean":
+            value = df["balanced_spread"].mean()
+            label = f"mean = {value:.2f}"
+            color = color_map.get("mean", default_colors[i % len(default_colors)])
+        else:
+            value = np.percentile(df["balanced_spread"], float(perc))
+            label = f"{perc}th = {value:.2f}"
+            color = color_map.get(perc_str, default_colors[i % len(default_colors)])
+        
+        ax.axvline(value, color=color, linestyle="--", label=label)
+
+    effective_title = title or "Balanced Spread"
+    if split_name:
+        effective_title += f" ({split_name})"
+    ax.set_title(effective_title)
+    ax.set_xlabel("Actual / Predicted")
+    ax.set_ylabel("Count")
+    ax.legend(frameon=True)
+    ax.grid(True, linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    return fig
+    
 def cumulative_gain_plot(model) -> pd.DataFrame:
     """Return cumulative gain DataFrame and plot cumulative gain curve."""
     importance = model.get_score(importance_type="gain")
@@ -311,6 +401,7 @@ def plot_error_by_group(
     ax1.set_title(effective_title)
     return fig
 
+
 def plot_error_by_group_grid(
     df: pd.DataFrame,
     actual_col: str,
@@ -322,7 +413,7 @@ def plot_error_by_group_grid(
     split_name: str | None = None,
     exposure_col: str | None = None,
     ncols: int = 2,
-    figsize: tuple[int, int] = (9, 6),
+    figsize: tuple[int, int] = (8, 6),
 ) -> plt.Figure:
     n_rows = -(-len(group_cols) // ncols)
     fig, axes = plt.subplots(n_rows, ncols, figsize=(figsize[0]*ncols, figsize[1]*n_rows))
@@ -334,8 +425,11 @@ def plot_error_by_group_grid(
 
         if pd.api.types.is_numeric_dtype(data[group_col]):
             binning = pd.qcut(data[group_col], q=bins, duplicates='drop')
-            data["bin_label"] = binning.astype(str)
-            ordered_labels = binning.cat.categories.astype(str).tolist()
+            data["bin"] = binning
+            bin_means = data.groupby("bin")[group_col].mean()
+            label_map = {interval: f"{mean:.2f}" for interval, mean in bin_means.items()}
+            data["bin_label"] = data["bin"].map(label_map)
+            ordered_labels = [label_map[b] for b in bin_means.index]
             group_col_final = "bin_label"
         else:
             group_col_final = group_col
@@ -367,7 +461,6 @@ def plot_error_by_group_grid(
             data=grouped, x=group_col_final, y='actual_mean',
             ax=ax2, marker='s', label='Actual Mean'
         )
-        ax2.grid(True, which='both', axis='y', linestyle='-', color='black', alpha=0.6)
         ax2.set_ylabel('Predicted vs. Actual Mean', color='black')
         ax2.grid(True, axis='y', linestyle='-', color="black", alpha=0.6)
         ax1.set_xlabel(f'{group_col}', color='black')

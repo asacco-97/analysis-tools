@@ -20,3 +20,15 @@ def test_partial_gini_plot_returns_figure(monkeypatch):
     rep = ModelAnalysisReport(df, actual_col="actual", predicted_col="pred")
     fig = rep.plot_partial_gini(top_percent=50)
     assert hasattr(fig, "savefig")
+
+def test_balanced_spread_returns_figure(monkeypatch):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    monkeypatch.setattr(plt, "show", lambda *a, **k: None)
+
+    df = pd.DataFrame({"actual": [1, 2, 3], "pred": [0.5, 2.5, 3.5]})
+    rep = ModelAnalysisReport(df, actual_col="actual", predicted_col="pred")
+    fig = rep.plot_balanced_spread()
+    assert hasattr(fig, "savefig")

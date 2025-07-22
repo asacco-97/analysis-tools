@@ -10,3 +10,4 @@ lift_chart = plots.lift_chart
 crunched_residual_plot = plots.crunched_residual_plot
 fig_to_base64_png = utils.fig_to_base64_png
 partial_gini_plot = plots.partial_gini_plot
+balanced_spread = plots.balanced_spread
