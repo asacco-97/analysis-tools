@@ -19,6 +19,25 @@ def fig_to_base64_png(fig: plt.Figure) -> str:
     return f'<img src="data:image/png;base64,{encoded}" />'
 
 
+def fig_to_html(fig: plt.Figure) -> str:
+    """Return an HTML representation of ``fig``.
+
+    This attempts to convert the Matplotlib figure to a Plotly figure for
+    interactive rendering in Jupyter. If Plotly is unavailable, it falls
+    back to a static PNG representation.
+    """
+    try:  # pragma: no cover - optional dependency
+        import plotly.io as pio
+        from plotly.tools import mpl_to_plotly
+
+        plotly_fig = mpl_to_plotly(fig)
+        html = pio.to_html(plotly_fig, include_plotlyjs="cdn", full_html=False)
+        plt.close(fig)
+        return html
+    except Exception:
+        return fig_to_base64_png(fig)
+
+
 def tweedie_deviance_residuals(y: np.ndarray, mu: np.ndarray, p: float) -> np.ndarray:
     """Compute deviance residuals for a Tweedie GLM."""
     y = np.asarray(y)

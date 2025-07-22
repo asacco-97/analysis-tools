@@ -1,6 +1,6 @@
 import argparse
 import pandas as pd
-from analysis.evaluator import ModelEvaluator
+from analysis import plots
 
 
 def main() -> None:
@@ -14,8 +14,12 @@ def main() -> None:
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
-    evaluator = ModelEvaluator(df, actual_col=args.actual, predicted_col=args.predicted)
-    fig = evaluator.plot_partial_gini(top_percent=args.top_percent)
+    fig = plots.partial_gini_plot(
+        df,
+        actual_col=args.actual,
+        predicted_col=args.predicted,
+        top_percent=args.top_percent,
+    )
     fig.savefig(args.output, bbox_inches="tight")
     print(f"Partial Gini plot saved to {args.output}")
 
