@@ -45,55 +45,79 @@ class ModelAnalysisReport:
 
     # ------------------------------------------------------------------
     # Convenience plotting helpers
-    def plot_gain(self, **kwargs: Any) -> Any:
-        return plots.gain_curve_with_gini(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            exposure_col=self.exposure_col,
-            split_name=None,
-            **kwargs,
-        )
+    def _iter_splits(self) -> Iterable[tuple[str | None, pd.DataFrame]]:
+            if self.split_col in self.df.columns:
+                for value, df in self.df.groupby(self.split_col):
+                    yield value, df.copy()
+            else:
+                yield None, self.df.copy()
+    
+    def plot_gain(self, **kwargs: Any) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.gain_curve_with_gini(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                exposure_col=self.exposure_col,
+                split_name=split_val,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
 
-    def plot_lift(self, **kwargs: Any) -> Any:
-        return plots.lift_chart(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            exposure_col=self.exposure_col,
-            split_name=None,
-            **kwargs,
-        )
+    def plot_lift(self, **kwargs: Any) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.lift_chart(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                exposure_col=self.exposure_col,
+                split_name=split_val,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
 
-    def plot_residuals(self, **kwargs: Any) -> Any:
-        return plots.crunched_residual_plot(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            exposure_col=self.exposure_col,
-            split_name=None,
-            **kwargs,
-        )
+    def plot_residuals(self, **kwargs: Any) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.crunched_residual_plot(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                exposure_col=self.exposure_col,
+                split_name=split_val,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
 
-    def plot_partial_gini(self, top_percent: int = 20, **kwargs: Any) -> Any:
-        return plots.partial_gini_plot(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            exposure_col=self.exposure_col,
-            split_name=None,
-            top_percent=top_percent,
-            **kwargs,
-        )
+    def plot_partial_gini(self, top_percent: int = 20, **kwargs: Any) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.partial_gini_plot(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                exposure_col=self.exposure_col,
+                split_name=split_val,
+                top_percent=top_percent,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
 
-    def plot_error_by_group_grid(self, group_cols: Iterable[str], **kwargs: Any) -> Any:
-        return plots.plot_error_by_group_grid(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            group_cols=group_cols,
-            **kwargs,
-        )
+    def plot_error_by_group_grid(self, group_cols: Iterable[str], **kwargs: Any) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.plot_error_by_group_grid(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                group_cols=list(group_cols),
+                split_name=split_val,
+                exposure_col=self.exposure_col,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
 
     # ------------------------------------------------------------------
     def compare_models_discrepancy(
