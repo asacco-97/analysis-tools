@@ -187,6 +187,9 @@ def generate_tabulations_html(
             df_copy = df_copy.merge(fct_df[[split_col, "factor"]], on=split_col, how="left")
             df_copy["_pred_weighted"] *= df_copy["factor"]
 
+        if split_col in df_copy.columns and split_col in df_copy.index.names:
+            df_copy = df_copy.drop(columns=split_col)
+
         grouped = (
             df_copy.groupby([group_col, split_col])
             .agg(
