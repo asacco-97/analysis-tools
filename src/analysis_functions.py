@@ -8,3 +8,4 @@ plot_error_by_group = plots.plot_error_by_group
 plot_error_by_group_grid = plots.plot_error_by_group_grid
 plot_target_vs_predictors = plots.plot_target_vs_predictors
 plot_variable_distributions = plots.plot_variable_distributions
+balanced_spread = plots.balanced_spread

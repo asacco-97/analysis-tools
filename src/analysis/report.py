@@ -39,10 +39,6 @@ class ModelAnalysisReport:
         """Return mean absolute error."""
         return float((self.df[self.actual_col] - self.df[self.predicted_col]).abs().mean())
 
-    def dislocation(self) -> pd.Series:
-        """Return the difference between actuals and predictions."""
-        return self.df[self.actual_col] - self.df[self.predicted_col]
-
     # ------------------------------------------------------------------
     # Convenience plotting helpers
     def _iter_splits(self) -> Iterable[tuple[str | None, pd.DataFrame]]:
@@ -101,6 +97,22 @@ class ModelAnalysisReport:
                 exposure_col=self.exposure_col,
                 split_name=split_val,
                 top_percent=top_percent,
+                **kwargs,
+            )
+        return figs if len(figs) > 1 else next(iter(figs.values()))
+
+    def plot_balanced_spread(
+        self, percentiles: Iterable[float | str] | None = None, **kwargs: Any
+    ) -> Dict[str | None, Any] | Any:
+        figs: Dict[str | None, Any] = {}
+        perc = list(percentiles) if percentiles is not None else [10, 50, 90, "mean"]
+        for split_val, df in self._iter_splits():
+            figs[split_val] = plots.balanced_spread(
+                df,
+                self.actual_col,
+                self.predicted_col,
+                percentiles=perc,
+                split_name=split_val,
                 **kwargs,
             )
         return figs if len(figs) > 1 else next(iter(figs.values()))
