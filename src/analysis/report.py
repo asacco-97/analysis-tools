@@ -31,7 +31,6 @@ class ModelAnalysisReport:
         self._sections: List[str] = []
 
     # ------------------------------------------------------------------
-    # Metric helpers formerly provided by ModelEvaluator
     def mse(self) -> float:
         """Return mean squared error."""
         return float(((self.df[self.actual_col] - self.df[self.predicted_col]) ** 2).mean())
@@ -152,55 +151,6 @@ class ModelAnalysisReport:
         self._sections.append(html)
 
     # ------------------------------------------------------------------
-    def export_html(
-        self,
-        output_html: str = "model_analysis.html",
-        title: str | None = None,
-        *,
-        error_group_cols: Iterable[str] | None = None,
-        tabulation_vars: Iterable[str] | None = None,
-        gain_kwargs: dict[str, Any] | None = None,
-        lift_kwargs: dict[str, Any] | None = None,
-        residual_kwargs: dict[str, Any] | None = None,
-        residual_fit_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        generate_model_analysis_report(
-            self.df,
-            self.actual_col,
-            self.predicted_col,
-            split_col=self.split_col,
-            exposure_col=self.exposure_col,
-            output_html=output_html,
-            error_group_cols=error_group_cols,
-            tabulation_vars=tabulation_vars,
-            title=title,
-            gain_kwargs=gain_kwargs,
-            lift_kwargs=lift_kwargs,
-            residual_kwargs=residual_kwargs,
-            residual_fit_kwargs=residual_fit_kwargs,
-        )
-
-    def tabulate(
-        self,
-        group_vars: Iterable[str],
-        *,
-        output_html: str,
-        n_bins: int = 5,
-        factor: bool = False,
-    ) -> str | None:
-        tabulation.generate_and_save_tabulations(
-            df=self.df,
-            prediction_col=self.predicted_col,
-            truth_col=self.actual_col,
-            group_vars=list(group_vars),
-            split_col=self.split_col,
-            weights_col=self.exposure_col,
-            n_bins=n_bins,
-            factor=factor,
-            output_html=output_html,
-        )
-        return None
-
     def save(self, output_html: str = "model_analysis.html") -> None:
         """Write the assembled report to ``output_html``."""
         html_output = "<html><head><title>Model Analysis Report</title></head><body>"
