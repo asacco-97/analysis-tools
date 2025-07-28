@@ -70,7 +70,7 @@ class GBMModelTrainer:
         """Ensure object columns are cast to categorical if using XGBoost."""
         df_clean = df.copy()
         if "XGB" in self.model_class.__name__:
-            for col in df_clean.select_dtypes(include="object").columns:
+            for col in df_clean.select_dtypes(include=["object", "string"]).columns:
                 df_clean[col] = df_clean[col].astype("category")
         return df_clean
 
@@ -108,14 +108,46 @@ class GBMModelTrainer:
         except Exception as exc:
             self._log(f"Failed to send email: {exc}")
 
+    def _accepts_kwargs(self, cls) -> bool:
+        sig = inspect.signature(cls.__init__)
+        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+    
+    def _filter_valid_kwargs(self, cls, candidate_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter kwargs to only those accepted by the model's __init__ method."""
+        valid_keys = inspect.signature(cls.__init__).parameters
+        valid_kwargs = {}
+        for k, v in candidate_kwargs.items():
+            if k in valid_keys:
+                valid_kwargs[k] = v
+            else:
+                self._log(
+                    f"⚠️ '{k}' is not a valid hyperparameter for {cls.__name__} and will be ignored. "
+                )
+        return valid_kwargs
+
     def _instantiate_model(self) -> Any:
-        model_params = dict(self.config.hyperparameters or {})
+        raw_params = dict(self.config.hyperparameters or {})
+        
         if "XGB" in self.model_class.__name__:
-            model_params.setdefault("enable_categorical", True)
-        return self.model_class(**model_params)
+            raw_params["enable_categorical"] = True
+
+        if self._accepts_kwargs(self.model_class):
+            model_params = raw_params  # pass all
+        else:
+            model_params = self._filter_valid_kwargs(self.model_class, raw_params)
+            
+        model = self.model_class(**model_params)
+        return model
 
     def _fit_model(self, X_train, y_train, X_valid, y_valid) -> None:
         fit_kwargs = {}
+        
+        # Detect cat features for CatBoost
+        if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
+            cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+            fit_kwargs["cat_features"] = cat_cols
+            fit_kwargs["verbose"] = False
+            
         fit_sig = inspect.signature(self.model.fit)
 
         # Eval set
@@ -124,9 +156,7 @@ class GBMModelTrainer:
             fit_kwargs["eval_set"] = [eval_pair]
 
         # Special handling
-        if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-            fit_kwargs["verbose"] = False
-        elif isinstance(self.model, (XGBClassifier, XGBRegressor)):
+        if isinstance(self.model, (XGBClassifier, XGBRegressor)):
             fit_kwargs["verbose"] = False
         elif isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
             fit_kwargs["verbose"] = -1
@@ -235,3 +265,4 @@ class GBMModelTrainer:
 
         if self.config.output_email and log_file:
             self._send_email(log_file)
+
