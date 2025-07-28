@@ -9,24 +9,47 @@ import time
 import smtplib
 import inspect
 from email.message import EmailMessage
-from typing import Any, Dict, Tuple, Optional, Iterable, List
+from typing import Any, Dict, Tuple, Optional, Iterable, List, Union, Callable
 import pandas as pd
+import numpy as np
+if not hasattr(np, "int"):
+    np.int = int
 
 from xgboost import XGBClassifier, XGBRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
 from catboost import CatBoostClassifier, CatBoostRegressor
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 from analysis.report import ModelAnalysisReport
 from analysis import plots
 
 
+class CatBoostClassifierWrapper(CatBoostClassifier, BaseEstimator, ClassifierMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.cat_features = kwargs.get("cat_features", [])
+
+    def fit(self, X, y=None, **kwargs):
+        return super().fit(X, y, cat_features=self.cat_features, **kwargs)
+
+class CatBoostRegressorWrapper(CatBoostRegressor, BaseEstimator, ClassifierMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.cat_features = kwargs.get("cat_features", [])
+
+    def fit(self, X, y=None, **kwargs):
+        return super().fit(X, y, cat_features=self.cat_features, **kwargs)
+        
 @dataclass
 class TuningConfig:
     """Configuration for hyperparameter tuning."""
 
     search_space: Dict[str, Any] = field(default_factory=dict)
     n_iter: int = 10
-    scoring: Optional[str] = None
+    scoring: Union[str, Callable] = None
+    cv: Union[str, int] = None
+    output_tuning: bool = False
+    tuning_file: str = None
 
 @dataclass
 class GBMModelTrainerConfig:
@@ -65,7 +88,7 @@ class GBMModelTrainer:
 
     def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
         with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = yaml.unsafe_load(f) or {}
         tuning_cfg = cfg.get("tuning", {})
         cfg["tuning"] = TuningConfig(**tuning_cfg)
         return GBMModelTrainerConfig(**cfg)
@@ -79,13 +102,11 @@ class GBMModelTrainer:
         return df, None
 
     def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Ensure object columns are cast to categorical if using XGBoost."""
-        df_clean = df.copy()
-        model_name = self.model_class.__name__
-        
-        if "XGB" in model_name or "LGBM" in model_name:
-            for col in df_clean.select_dtypes(include=["object", "string"]).columns:
-                df_clean[col] = df_clean[col].astype("category")
+        """Ensure object columns are cast to categorical."""
+        df_clean = df.copy()        
+        for col in df_clean.select_dtypes(include=["object", "string"]).columns:
+            df_clean[col] = df_clean[col].astype("category")
+            
         return df_clean
 
     def _ensure_parent_dir(self, path: str | Path) -> Path:
@@ -183,8 +204,9 @@ class GBMModelTrainer:
         else:
             self.model.fit(X_train, **fit_kwargs)
 
-    def tune(self) -> None:
+    def tune(self) -> pd.DataFrame:
         """Hyperparameter tuning using Bayesian search."""
+        start = time.time()
         tuning_cfg = self.config.tuning
         if not tuning_cfg.search_space:
             self._log("No tuning search space provided; skipping tuning")
@@ -205,27 +227,57 @@ class GBMModelTrainer:
                 "BayesSearchCV requires scikit-optimize to be installed"
             ) from exc
 
-        base_estimator = self.model_class(**self.config.hyperparameters)
 
+        # Set base estimator using model parameters
+        if self.model is None:
+            self.model = self._instantiate_model()
+            self._log(f"Instantiated model: {self.model.__class__.__name__}")
+        else:
+            self._log(f"Using existing model: {self.model.__class__.__name__}")
+            
+        base_estimator = self.model
+
+        # Specify cross validation column or number of folds
+        cv = tuning_cfg.cv
+        if isinstance(cv, int):
+            cv_strategy = cv
+        elif isinstance(cv, str):
+            # If a split col is passed, map to integers
+            unique_splits = X_all[cv].unique()
+            split_map = {split: idx for (idx, split) in enumerate(unique_split)}
+            split_indices = X_all[cv].map(split_map).values
+            cv_strategy = PredefinedSplit(test_fold=split_indices)
+        else:
+            # Default to no cv strategy
+            cv_strategy = None
+
+        # Run search
         search = BayesSearchCV(
             estimator=base_estimator,
             search_spaces=tuning_cfg.search_space,
             n_iter=tuning_cfg.n_iter,
             scoring=tuning_cfg.scoring,
             refit=True,
-            return_train_score=False,
+            return_train_score=True,
+            cv=cv_strategy,
         )
 
         trial = {"num": 0}
 
-        def log_step(_):
+        def log_step(result):
             idx = trial["num"]
-            score = search.cv_results_["mean_test_score"][idx]
-            params = search.cv_results_["params"][idx]
-            self._log(f"Trial {idx+1}: score={score:.4f} params={params}")
+            score = result.func_vals[-1]  # Last function value (score)
+            params_named = dict(zip(search.search_spaces.keys(), result.x_iters[-1]))
+            self._log(f"Trial {idx + 1}: score={score:.4f} params={params_named}")
             trial["num"] += 1
 
-        search.fit(X_all, y_all, callback=log_step)
+        
+        # Specify categorical columns for tuning
+        if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
+            cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+            search.fit(X_all, y_all, callback=log_step, cat_features=cat_cols)
+        else:
+            search.fit(X_all, y_all, callback=log_step)
 
         self.config.hyperparameters.update(search.best_params_)
         self.model = search.best_estimator_
@@ -233,12 +285,18 @@ class GBMModelTrainer:
             f"Tuning complete. Best score {search.best_score_:.4f}; params {search.best_params_}"
         )
 
+        tuning_df = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
+        if tuning_cfg.output_tuning:
+            tuning_df.to_csv(tuning_cfg.tuning_file)
+
+        return tuning_df
+
     def train(self) -> None:
         """Main training routine."""
         start = time.time()
         X_train, y_train = self._split_xy(self._prepare_dataframe(self.train_df))
         X_valid, y_valid = self._split_xy(self._prepare_dataframe(self.valid_df))
-        if self.holdout_df:
+        if self.holdout_df is not None and not self.holdout_df.empty:
             X_holdout, y_holdout = self._split_xy(self._prepare_dataframe(self.holdout_df))
 
         if self.model is None:
@@ -287,12 +345,12 @@ class GBMModelTrainer:
             train_df_with_preds["split"] = "T"
             valid_df_with_preds["split"] = "V"
             
-            if self.holdout_df:
+            if self.holdout_df is not None and not self.holdout_df.empty:
                 if hasattr(self.model, "predict_proba"):
                     holdout_preds = self.model.predict_proba(X_holdout)[:, 1]
                 else:
                     holdout_preds = self.model.predict(X_holdout)
-                holdout_df_with_preds = self.valid_df.copy()
+                holdout_df_with_preds = self.holdout_df.copy()
                 holdout_df_with_preds[pred_col] = holdout_preds
                 holdout_df_with_preds["split"] = "H"
 
