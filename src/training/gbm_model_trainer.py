@@ -19,6 +19,15 @@ from catboost import CatBoostClassifier, CatBoostRegressor
 from analysis.report import ModelAnalysisReport
 from analysis import plots
 
+
+@dataclass
+class TuningConfig:
+    """Configuration for hyperparameter tuning."""
+
+    search_space: Dict[str, Any] = field(default_factory=dict)
+    n_iter: int = 10
+    scoring: Optional[str] = None
+
 @dataclass
 class GBMModelTrainerConfig:
     actual_col: str
@@ -33,8 +42,9 @@ class GBMModelTrainerConfig:
     # Params for Model Analysis Report if outputting
     output_report: bool = False
     report_params: Dict[str, Any] = field(default_factory=dict)
-    plots_to_add: List[Dict[str, Any]] = field(default_factory=list) 
-    tabulate_vars: List[str] = field(default_factory=list)  
+    plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
+    tabulate_vars: List[str] = field(default_factory=list)
+    tuning: TuningConfig = field(default_factory=TuningConfig)
 
 class GBMModelTrainer:
     def __init__(
@@ -56,6 +66,8 @@ class GBMModelTrainer:
     def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f) or {}
+        tuning_cfg = cfg.get("tuning", {})
+        cfg["tuning"] = TuningConfig(**tuning_cfg)
         return GBMModelTrainerConfig(**cfg)
 
     def _split_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series | None]:
@@ -171,6 +183,56 @@ class GBMModelTrainer:
         else:
             self.model.fit(X_train, **fit_kwargs)
 
+    def tune(self) -> None:
+        """Hyperparameter tuning using Bayesian search."""
+        tuning_cfg = self.config.tuning
+        if not tuning_cfg.search_space:
+            self._log("No tuning search space provided; skipping tuning")
+            return
+
+        X_train, y_train = self._split_xy(self._prepare_dataframe(self.train_df))
+        X_valid, y_valid = self._split_xy(self._prepare_dataframe(self.valid_df))
+
+        X_all = pd.concat([X_train, X_valid]).reset_index(drop=True)
+        y_all = None
+        if y_train is not None:
+            y_all = pd.concat([y_train, y_valid]).reset_index(drop=True)
+
+        try:
+            from skopt import BayesSearchCV
+        except Exception as exc:  # pragma: no cover - library may be missing
+            raise ImportError(
+                "BayesSearchCV requires scikit-optimize to be installed"
+            ) from exc
+
+        base_estimator = self.model_class(**self.config.hyperparameters)
+
+        search = BayesSearchCV(
+            estimator=base_estimator,
+            search_spaces=tuning_cfg.search_space,
+            n_iter=tuning_cfg.n_iter,
+            scoring=tuning_cfg.scoring,
+            refit=True,
+            return_train_score=False,
+        )
+
+        trial = {"num": 0}
+
+        def log_step(_):
+            idx = trial["num"]
+            score = search.cv_results_["mean_test_score"][idx]
+            params = search.cv_results_["params"][idx]
+            self._log(f"Trial {idx+1}: score={score:.4f} params={params}")
+            trial["num"] += 1
+
+        search.fit(X_all, y_all, callback=log_step)
+
+        self.config.hyperparameters.update(search.best_params_)
+        self.model = search.best_estimator_
+        self._log(
+            f"Tuning complete. Best score {search.best_score_:.4f}; params {search.best_params_}"
+        )
+
     def train(self) -> None:
         """Main training routine."""
         start = time.time()
@@ -179,8 +241,11 @@ class GBMModelTrainer:
         if self.holdout_df:
             X_holdout, y_holdout = self._split_xy(self._prepare_dataframe(self.holdout_df))
 
-        self.model = self._instantiate_model()
-        self._log(f"Instantiated model: {self.model.__class__.__name__}")
+        if self.model is None:
+            self.model = self._instantiate_model()
+            self._log(f"Instantiated model: {self.model.__class__.__name__}")
+        else:
+            self._log(f"Using existing model: {self.model.__class__.__name__}")
 
         self._fit_model(X_train, y_train, X_valid, y_valid)
         fit_time = time.time() - start
