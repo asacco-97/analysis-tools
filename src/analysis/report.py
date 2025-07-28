@@ -6,7 +6,7 @@ from typing import Any, Callable, Iterable, List, Optional
 import pandas as pd
 
 from . import plots, tabulation
-from .utils import fig_to_html
+from .utils import fig_to_base64_png
 
 
 class ModelAnalysisReport:
