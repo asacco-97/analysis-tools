@@ -69,7 +69,9 @@ class GBMModelTrainer:
     def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Ensure object columns are cast to categorical if using XGBoost."""
         df_clean = df.copy()
-        if "XGB" in self.model_class.__name__:
+        model_name = self.model_class.__name__
+        
+        if "XGB" in model_name or "LGBM" in model_name:
             for col in df_clean.select_dtypes(include=["object", "string"]).columns:
                 df_clean[col] = df_clean[col].astype("category")
         return df_clean
@@ -130,12 +132,16 @@ class GBMModelTrainer:
         
         if "XGB" in self.model_class.__name__:
             raw_params["enable_categorical"] = True
+            model_params = raw_params
 
-        if self._accepts_kwargs(self.model_class):
-            model_params = raw_params  # pass all
         else:
+            # Model-specific defaults
+            if "LGBM" in self.model_class.__name__:
+                raw_params["verbose"] = False
+
+            # Filter model parameters for CATBoost and LightGBM
             model_params = self._filter_valid_kwargs(self.model_class, raw_params)
-            
+
         model = self.model_class(**model_params)
         return model
 
@@ -143,8 +149,8 @@ class GBMModelTrainer:
         fit_kwargs = {}
         
         # Detect cat features for CatBoost
+        cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
         if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-            cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
             fit_kwargs["cat_features"] = cat_cols
             fit_kwargs["verbose"] = False
             
@@ -158,9 +164,7 @@ class GBMModelTrainer:
         # Special handling
         if isinstance(self.model, (XGBClassifier, XGBRegressor)):
             fit_kwargs["verbose"] = False
-        elif isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
-            fit_kwargs["verbose"] = -1
-
+        
         # Fit
         if y_train is not None:
             self.model.fit(X_train, y_train, **fit_kwargs)
