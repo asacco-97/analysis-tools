@@ -1,0 +1,78 @@
+# Model parameters
+actual_col: target
+predicted_col: pred
+output_dir: outputs
+hyperparameters:
+  n_estimators: 200
+
+# Log parameters
+log_file: training.log
+output_log: true
+
+# Report parameters
+output_report: true
+plots_to_add:
+
+- plot: plot_error_by_group_grid
+  title: Error by Analysis Variables
+  kwargs:
+      group_cols:
+      - job
+      - education
+      - age
+  
+- plot: gain_curve_with_gini
+  title: Gain Curve / Lorenz Curve
+    
+- plot: partial_gini_plot
+  title: Partial Gini (Top 15%)
+  kwargs:
+      top_percent: 15
+  
+- plot: lift_chart
+  title: Lift Chart
+  
+- plot: crunched_residual_plot
+  title: Crunched Residuals
+
+- plot: plot_residual_fit
+  title: Std and Avg of Residuals
+  kwargs:
+    residual_type: normalized
+  
+report_file: model_analysis.html
+report_params: {}
+tabulate_vars:
+- job
+- marital
+- education
+
+# Tuning parameters
+tuning:
+  cv: 3
+  n_iter: 30
+  output_tuning: true
+  scoring: normalized_gini
+  search_space:
+    depth:
+      type: Integer
+      low: 3
+      high: 10
+    bagging_temperature:
+      type: Real
+      low: 0.01
+      high: 0.95
+    leaf_estimation_iterations: 
+      type: Integer
+      low: 1
+      high: 10
+    random_strength:
+      type: Real
+      low: 1
+      high: 20
+    l2_leaf_reg:
+      type: Real
+      low: 1
+      high: 10
+    
+  tuning_file: tuning.csv

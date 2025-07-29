@@ -1,44 +1,27 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import logging
 import yaml
 import json
 import time
-import smtplib
 import inspect
-from email.message import EmailMessage
 from typing import Any, Dict, Tuple, Optional, Iterable, List, Union, Callable
 import pandas as pd
 import numpy as np
 if not hasattr(np, "int"):
     np.int = int
+import shutil
 
 from xgboost import XGBClassifier, XGBRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
 from catboost import CatBoostClassifier, CatBoostRegressor
-from sklearn.base import BaseEstimator, ClassifierMixin
+from skopt.space import Real, Integer, Categorical
 
 from analysis.report import ModelAnalysisReport
 from analysis import plots
-
-
-class CatBoostClassifierWrapper(CatBoostClassifier, BaseEstimator, ClassifierMixin):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cat_features = kwargs.get("cat_features", [])
-
-    def fit(self, X, y=None, **kwargs):
-        return super().fit(X, y, cat_features=self.cat_features, **kwargs)
-
-class CatBoostRegressorWrapper(CatBoostRegressor, BaseEstimator, ClassifierMixin):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cat_features = kwargs.get("cat_features", [])
-
-    def fit(self, X, y=None, **kwargs):
-        return super().fit(X, y, cat_features=self.cat_features, **kwargs)
+from metrics.scorers import get_scorer
         
 @dataclass
 class TuningConfig:
@@ -49,18 +32,18 @@ class TuningConfig:
     scoring: Union[str, Callable] = None
     cv: Union[str, int] = None
     output_tuning: bool = False
+    n_jobs: int = 1
     tuning_file: str = None
 
 @dataclass
 class GBMModelTrainerConfig:
     actual_col: str
     predicted_col: str
+    output_dir: str = "outputs"
     log_file: str = "training.log"
-    report_output_path: str = "model_analysis.html"
-    email: Optional[str] = None
+    report_file: str = "model_analysis.html"
     hyperparameters: Dict[str, Any] = field(default_factory=dict)
     output_log: bool = True
-    output_email: bool = False
 
     # Params for Model Analysis Report if outputting
     output_report: bool = False
@@ -79,6 +62,7 @@ class GBMModelTrainer:
         holdout_df: pd.DataFrame = None
     ) -> None:
         self.model_class = model_class
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.train_df = train_df
         self.valid_df = valid_df
@@ -88,9 +72,19 @@ class GBMModelTrainer:
 
     def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
         with open(config_path, "r") as f:
-            cfg = yaml.unsafe_load(f) or {}
-        tuning_cfg = cfg.get("tuning", {})
-        cfg["tuning"] = TuningConfig(**tuning_cfg)
+            cfg = yaml.safe_load(f) or {}
+    
+        # Parse tuning config and search space
+        if "tuning" in cfg and "search_space" in cfg["tuning"]:
+
+            # Parse scoring metric if custom
+            cfg["tuning"]["scoring"] = get_scorer(cfg["tuning"].get("scoring", None))
+
+            # Parse low and high bounds of search space 
+            raw_space = cfg["tuning"]["search_space"]
+            cfg["tuning"]["search_space"] = parse_search_space(raw_space)
+            cfg["tuning"] = TuningConfig(**cfg["tuning"])
+    
         return GBMModelTrainerConfig(**cfg)
 
     def _split_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series | None]:
@@ -114,34 +108,38 @@ class GBMModelTrainer:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _resolve_output_path(self, filename: str | Path) -> Tuple[Path, str | None]:
+        """
+        Returns a tuple of (local_path, s3_dest) — even if output_dir is S3, file is written locally first.
+        """
+        filename = Path(filename).name
+        output_dir = self.config.output_dir
+    
+        if is_s3_path(output_dir):
+            local_dir = Path("/tmp/model_outputs")
+            local_dir.mkdir(parents=True, exist_ok=True)
+            local_path = local_dir / filename
+            s3_path = f"{output_dir.rstrip('/')}/{filename}"
+            return local_path, s3_path
+        else:
+            local_path = Path(output_dir) / filename
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            return local_path, None
+    
     def _log(self, message: str) -> None:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log_lines.append(f"[{timestamp}] {message}")
 
     def _write_log(self) -> str:
-        log_path = self._ensure_parent_dir(self.config.log_file)
-        with open(log_path, "w") as f:
+        local_path, s3_path = self._resolve_output_path(self.config.log_file)
+        with open(local_path, "w") as f:
             f.write("\n".join(self.log_lines))
-        return log_path
-
-    def _send_email(self, log_file: str) -> None:
-        email_to = self.config.email
-        if not email_to:
-            return
-
-        msg = EmailMessage()
-        msg["Subject"] = "Model Training Log"
-        msg["From"] = "noreply@modeltraining.com"
-        msg["To"] = email_to
-        with open(log_file) as f:
-            msg.set_content(f.read())
-
-        try:
-            with smtplib.SMTP("localhost") as server:
-                server.send_message(msg)
-            self._log(f"Sent log to {email_to}")
-        except Exception as exc:
-            self._log(f"Failed to send email: {exc}")
+    
+        if s3_path:
+            upload_file_to_s3(local_path, s3_path)
+            self._log(f"Log uploaded to {s3_path}")
+    
+        return str(local_path)
 
     def _accepts_kwargs(self, cls) -> bool:
         sig = inspect.signature(cls.__init__)
@@ -260,6 +258,7 @@ class GBMModelTrainer:
             refit=True,
             return_train_score=True,
             cv=cv_strategy,
+            n_jobs=tuning_cfg.n_jobs
         )
 
         trial = {"num": 0}
@@ -286,8 +285,16 @@ class GBMModelTrainer:
         )
 
         tuning_df = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
+
+        # Save locally and (optionally) to S3
         if tuning_cfg.output_tuning:
-            tuning_df.to_csv(tuning_cfg.tuning_file)
+            tuning_local_path, tuning_s3_path = self._resolve_output_path(tuning_cfg.tuning_file)
+            tuning_df.to_csv(tuning_local_path)
+            self._log(f"Tuning DF saved to {tuning_local_path.resolve()}")
+
+            if tuning_s3_path:
+                upload_file_to_s3(tuning_local_path, tuning_local_path)
+                self._log(f"Tuning DF uploaded to {report_s3_path}")
 
         return tuning_df
 
@@ -381,15 +388,61 @@ class GBMModelTrainer:
                 except Exception as e:
                     self._log(f"⚠️ Failed to add plot '{func_name}': {e}")
             
-            report_path = self._ensure_parent_dir(self.config.report_output_path)
-            mar.save(report_path)
-            self._log(f"Analysis report saved to {report_path}")
+            # Save locally and (optionally) to S3
+            report_local_path, report_s3_path = self._resolve_output_path(self.config.report_file)
+            report_local_path.parent.mkdir(parents=True, exist_ok=True)
+            mar.save(report_local_path)
+            self._log(f"Analysis report saved to {report_local_path.resolve()}")
+            
+            if report_s3_path:
+                upload_file_to_s3(report_local_path, report_s3_path)
+                self._log(f"Analysis report uploaded to {report_s3_path}")
+
+        # Save a copy of the config
+        config_local_path, config_s3_path = self._resolve_output_path("config.yaml")
+        shutil.copy(self.config_path, config_local_path)
+        self._log(f"Saved config to {config_local_path}")
+        
+        if config_s3_path:
+            upload_file_to_s3(config_local_path, config_s3_path)
+            self._log(f"Config uploaded to {config_s3_path}")
 
         # -------------------------------------------------------
         log_file = None
         if self.config.output_log:
             log_file = self._write_log()
 
-        if self.config.output_email and log_file:
-            self._send_email(log_file)
+def parse_search_space(raw_space: dict):
+    search_space = {}
+    for param_name, param_cfg in raw_space.items():
+        param_type = param_cfg["type"].lower()
+        if param_type == "integer":
+            search_space[param_name] = Integer(
+                low=param_cfg["low"],
+                high=param_cfg["high"],
+                prior=param_cfg.get("prior", "uniform")
+            )
+        elif param_type == "real":
+            search_space[param_name] = Real(
+                low=param_cfg["low"],
+                high=param_cfg["high"],
+                prior=param_cfg.get("prior", "uniform")
+            )
+        elif param_type == "categorical":
+            search_space[param_name] = Categorical(
+                categories=param_cfg["categories"]
+            )
+        else:
+            raise ValueError(f"Unsupported type: {param_type}")
+    return search_space
 
+def is_s3_path(path: str | Path) -> bool:
+    return str(path).startswith("s3://")
+
+def upload_file_to_s3(local_path: Path, s3_path: str) -> None:
+    parsed = urlparse(s3_path)
+    bucket = parsed.netloc
+    key = parsed.path.lstrip("/") + "/" + local_path.name
+
+    s3 = boto3.client("s3")
+    s3.upload_file(str(local_path), bucket, key)
