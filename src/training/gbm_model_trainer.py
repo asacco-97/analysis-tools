@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from pathlib import Path
 import logging
 import yaml
 import json
 import time
-import smtplib
 import inspect
-from email.message import EmailMessage
 from typing import Any, Dict, Tuple, Optional, Iterable, List, Union, Callable
 import pandas as pd
 import numpy as np
 if not hasattr(np, "int"):
     np.int = int
+import shutil
 
 from xgboost import XGBClassifier, XGBRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
@@ -33,19 +32,18 @@ class TuningConfig:
     scoring: Union[str, Callable] = None
     cv: Union[str, int] = None
     output_tuning: bool = False
+    n_jobs: int = 1
     tuning_file: str = None
 
 @dataclass
 class GBMModelTrainerConfig:
     actual_col: str
     predicted_col: str
-    output_dir: str = "outputs
+    output_dir: str = "outputs"
     log_file: str = "training.log"
     report_file: str = "model_analysis.html"
-    email: Optional[str] = None
     hyperparameters: Dict[str, Any] = field(default_factory=dict)
     output_log: bool = True
-    output_email: bool = False
 
     # Params for Model Analysis Report if outputting
     output_report: bool = False
@@ -64,6 +62,7 @@ class GBMModelTrainer:
         holdout_df: pd.DataFrame = None
     ) -> None:
         self.model_class = model_class
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.train_df = train_df
         self.valid_df = valid_df
@@ -127,39 +126,20 @@ class GBMModelTrainer:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             return local_path, None
     
-        def _log(self, message: str) -> None:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            self.log_lines.append(f"[{timestamp}] {message}")
+    def _log(self, message: str) -> None:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.log_lines.append(f"[{timestamp}] {message}")
+
+    def _write_log(self) -> str:
+        local_path, s3_path = self._resolve_output_path(self.config.log_file)
+        with open(local_path, "w") as f:
+            f.write("\n".join(self.log_lines))
     
-        def _write_log(self) -> str:
-            local_path, s3_path = self._resolve_output_path(self.config.log_file)
-            with open(local_path, "w") as f:
-                f.write("\n".join(self.log_lines))
-        
-            if s3_path:
-                upload_file_to_s3(local_path, s3_path)
-                self._log(f"Log uploaded to {s3_path}")
-        
-            return str(local_path)
-
-    def _send_email(self, log_file: str) -> None:
-        email_to = self.config.email
-        if not email_to:
-            return
-
-        msg = EmailMessage()
-        msg["Subject"] = "Model Training Log"
-        msg["From"] = "noreply@modeltraining.com"
-        msg["To"] = email_to
-        with open(log_file) as f:
-            msg.set_content(f.read())
-
-        try:
-            with smtplib.SMTP("localhost") as server:
-                server.send_message(msg)
-            self._log(f"Sent log to {email_to}")
-        except Exception as exc:
-            self._log(f"Failed to send email: {exc}")
+        if s3_path:
+            upload_file_to_s3(local_path, s3_path)
+            self._log(f"Log uploaded to {s3_path}")
+    
+        return str(local_path)
 
     def _accepts_kwargs(self, cls) -> bool:
         sig = inspect.signature(cls.__init__)
@@ -278,6 +258,7 @@ class GBMModelTrainer:
             refit=True,
             return_train_score=True,
             cv=cv_strategy,
+            n_jobs=tuning_cfg.n_jobs
         )
 
         trial = {"num": 0}
@@ -408,7 +389,7 @@ class GBMModelTrainer:
                     self._log(f"⚠️ Failed to add plot '{func_name}': {e}")
             
             # Save locally and (optionally) to S3
-            report_local_path, report_s3_path = self._resolve_output_path(self.config.report_output_path)
+            report_local_path, report_s3_path = self._resolve_output_path(self.config.report_file)
             report_local_path.parent.mkdir(parents=True, exist_ok=True)
             mar.save(report_local_path)
             self._log(f"Analysis report saved to {report_local_path.resolve()}")
@@ -418,12 +399,10 @@ class GBMModelTrainer:
                 self._log(f"Analysis report uploaded to {report_s3_path}")
 
         # Save a copy of the config
-        config_data = json.loads(json.dumps(asdict(self.config)))  # Ensure YAML-safe
-        config_local_path, config_s3_path = self._resolve_output_path("config_used.yaml")
-        with open(config_local_path, "w") as f:
-            yaml.dump(config_data, f, indent=2)
+        config_local_path, config_s3_path = self._resolve_output_path("config.yaml")
+        shutil.copy(self.config_path, config_local_path)
+        self._log(f"Saved config to {config_local_path}")
         
-        self._log(f"Config written to {config_local_path.resolve()}")
         if config_s3_path:
             upload_file_to_s3(config_local_path, config_s3_path)
             self._log(f"Config uploaded to {config_s3_path}")
@@ -432,9 +411,6 @@ class GBMModelTrainer:
         log_file = None
         if self.config.output_log:
             log_file = self._write_log()
-
-        if self.config.output_email and log_file:
-            self._send_email(log_file)
 
 def parse_search_space(raw_space: dict):
     search_space = {}
