@@ -1,13 +1,12 @@
 # Model parameters
 actual_col: target
 predicted_col: pred
+output_dir: outputs
 hyperparameters:
   n_estimators: 200
 
 # Log parameters
-log_file: outputs/training.log
-email: asacco@plymouthrock.com
-output_email: true
+log_file: training.log
 output_log: true
 
 # Report parameters
@@ -41,7 +40,7 @@ plots_to_add:
   kwargs:
     residual_type: normalized
   
-report_output_path: outputs/model_analysis.html
+report_file: model_analysis.html
 report_params: {}
 tabulate_vars:
 - job
@@ -76,4 +75,4 @@ tuning:
       low: 1
       high: 10
     
-  tuning_file: outputs/tuning.csv
+  tuning_file: tuning.csv

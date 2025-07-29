@@ -1,19 +1,18 @@
 # Model parameters
 actual_col: target
 predicted_col: pred
+output_dir: outputs
 hyperparameters:
   colsample_bytree: 0.5
   learning_rate: 0.1
-  depth: 3
+  max_depth: 3
   n_estimators: 200
   objective: binary:logistic
   random_state: 42
   subsample: 0.5
 
 # Log parameters
-log_file: outputs/training.log
-email: asacco@plymouthrock.com
-output_email: true
+log_file: training.log
 output_log: true
 
 # Report parameters
@@ -47,7 +46,7 @@ plots_to_add:
   kwargs:
     residual_type: normalized
   
-report_output_path: outputs/model_analysis.html
+report_file: model_analysis.html
 report_params: {}
 tabulate_vars:
 - job
@@ -57,7 +56,7 @@ tabulate_vars:
 # Tuning parameters
 tuning:
   cv: 3
-  n_iter: 30
+  n_iter: 20
   output_tuning: true
   scoring: normalized_gini
   search_space:
@@ -73,4 +72,5 @@ tuning:
     booster:
       type: Categorical
       categories: ["gbtree", "dart"]
-  tuning_file: outputs/tuning.csv
+  n_jobs: 1
+  tuning_file: tuning.csv
