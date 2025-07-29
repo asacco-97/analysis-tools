@@ -5,5 +5,24 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "pandas>=2.2.0",
+    "numpy>=1.25",
+    "scikit-learn>=1.6.0",
+    "matplotlib",
+    "seaborn",
     "scikit-optimize>=0.9.0",
+    "pyyaml",
+    "xgboost",
+    "lightgbm",
+    "catboost",
+    "boto3",
+    "jinja2",
+    "email-validator"
 ]
+
+[tool.uv]
+dev-dependencies = [
+  "jupyterlab",
+  "ipython",
+]
+

@@ -1,0 +1,59 @@
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# SageMaker and notebook outputs
+*.sagemaker/
+*.log
+*.tmp
+*.bak
+outputs/
+notebooks/outputs/
+*.out
+*.ipynb~
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+.uv/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Mac & Linux system files
+.DS_Store
+Thumbs.db
+
+# Lock and metadata files
+poetry.lock
+Pipfile.lock
+uv.lock
+
+# Pytest and coverage
+htmlcov/
+.tox/
+.nox/
+coverage.*
+.cache
+nosetests.xml
+pytestdebug.log
+
