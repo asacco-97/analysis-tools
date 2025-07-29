@@ -3,7 +3,7 @@ name = "analysis-tools"
 version = "0.1.0"
 description = "Library containing model training and analysis tools."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "pandas==2.3.1",
     "numpy==2.3.2",
