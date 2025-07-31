@@ -683,7 +683,7 @@ def crunched_residual_plot(
 
     df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
     grouped = (
-        df.groupby("group")
+        df.groupby("group", observed=False)
         .agg(
             count=(predicted_col, "count"),
             avg_predicted=(predicted_col, "mean"),
