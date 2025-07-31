@@ -22,6 +22,22 @@ from analysis import plots
 from scoring.callbacks import LogEvalCallback, EarlyStoppingCallback
 from xgboost.callback import TrainingCallback
 
+default_report_plots = [
+    {"plot": "gain_curve_with_gini", "title": "Gain Curve / Lorenz Curve"},
+    {
+        "plot": "partial_gini_plot",
+        "title": "Partial Gini (Top 15%)",
+        "kwargs": {"top_percent": 15},
+    },
+    {"plot": "lift_chart", "title": "Lift Chart"},
+    {"plot": "crunched_residual_plot", "title": "Crunched Residuals"},
+    {
+        "plot": "plot_residual_fit",
+        "title": "Std and Avg of Normalized Residuals",
+        "kwargs": {"residual_type": "normalized"},
+    },
+]
+
 @dataclass
 class TuningConfig:
     """Configuration for hyperparameter tuning."""
@@ -359,8 +375,20 @@ class GBMModelTrainer:
         self.logger.info(f"Target column: '{self.config.actual_col}'")
         self.logger.info(f"Prediction column: '{self.config.predicted_col}'")
 
+        # Save model and log path
+        model_path, model_s3_path = self._resolve_output_path(self.config.model_file)
+        self.model.save_model(model_path)
+        self.logger.info(f"Model saved to {model_path.resolve()}")
+        if model_s3_path:
+            upload_file_to_s3(model_path, model_s3_path)
+            self.logger.info(f"Model uploaded to {model_s3_path}")
+
         # -------------------------------------------------------
         if self.config.output_report:
+
+            # If plots to add are not specified, output model fit plots
+            all_plots = self.config.plots_to_add or default_report_plots
+
             actual_col = self.config.actual_col
             pred_col = self.config.predicted_col
 
@@ -401,10 +429,10 @@ class GBMModelTrainer:
                 predicted_col=pred_col,
                 **self.config.report_params,
             )
-            if self.config.tabulate_vars:
+            if len(self.config.tabulate_vars) > 0:
                 mar.add_tabulation(variables=self.config.tabulate_vars)
 
-            for plot_cfg in self.config.plots_to_add:
+            for plot_cfg in all_plots:
                 func_name = plot_cfg.get("plot")
                 title = plot_cfg.get("title", func_name)
                 kwargs = plot_cfg.get("kwargs", {})
