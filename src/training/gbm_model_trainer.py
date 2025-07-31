@@ -5,7 +5,7 @@ from pathlib import Path
 import logging
 import yaml
 import time
-from typing import Any, Dict, Tuple, Optional, Iterable, List, Callable
+from typing import Any, Dict, Tuple, Optional, List, Callable, Union
 import pandas as pd
 import numpy as np
 
@@ -19,7 +19,24 @@ from skopt import gp_minimize
 
 from analysis.report import ModelAnalysisReport
 from analysis import plots
+from scoring.callbacks import LogEvalCallback, EarlyStoppingCallback
+from xgboost.callback import TrainingCallback
 
+default_report_plots = [
+    {"plot": "gain_curve_with_gini", "title": "Gain Curve / Lorenz Curve"},
+    {
+        "plot": "partial_gini_plot",
+        "title": "Partial Gini (Top 15%)",
+        "kwargs": {"top_percent": 15},
+    },
+    {"plot": "lift_chart", "title": "Lift Chart"},
+    {"plot": "crunched_residual_plot", "title": "Crunched Residuals"},
+    {
+        "plot": "plot_residual_fit",
+        "title": "Std and Avg of Normalized Residuals",
+        "kwargs": {"residual_type": "normalized"},
+    },
+]
 
 @dataclass
 class TuningConfig:
@@ -29,7 +46,7 @@ class TuningConfig:
     n_iter: int = 10
     objective_func: Optional[Callable[[pd.Series, np.ndarray], float]] = None
     output_tuning: bool = False
-    tuning_file: str | None = None
+    tuning_file: str = "tuning.csv"
 
 
 @dataclass
@@ -39,10 +56,16 @@ class GBMModelTrainerConfig:
     output_dir: str = "outputs"
     log_file: str = "training.log"
     report_file: str = "model_analysis.html"
+    model_file: str = "model_obj.json"
     hyperparameters: Dict[str, Any] = field(default_factory=dict)
-    callbacks: List[Callable] = field(default_factory=list)
+    feval: Optional[Union[str, Callable[[pd.Series, np.ndarray], float]]] = None
     output_log: bool = True
     base_margin_col: str | None = None
+
+    log_eval_period: int = 50
+    early_stopping_rounds: Optional[int] = None
+    early_stopping_metric: Optional[str] = None
+    early_stopping_maximize: bool = False
 
     # Params for Model Analysis Report if outputting
     output_report: bool = False
@@ -50,42 +73,23 @@ class GBMModelTrainerConfig:
     plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
     tabulate_vars: List[str] = field(default_factory=list)
     tuning: TuningConfig = field(default_factory=TuningConfig)
-    callbacks: List[Dict[str, Any]] = field(
-        default_factory=lambda: [
-            {
-                "name": "log_eval",
-                "period": 50
-            },
-            {
-                "name": "early_stopping", 
-                "stopping_rounds": 30
-            },
-        ]
-    )
-
 
 class GBMModelTrainer:
     def __init__(
         self,
-        model_class: Any,
         config_path: str,
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
         holdout_df: pd.DataFrame | None = None,
-        *,
-        callbacks: Optional[List[Callable]] = None,
-        logger: Optional[logging.Logger] = None,
     ) -> None:
-        self.model_class = model_class
         self.config_path = config_path
         self.config = self._load_config(config_path)
         self.train_df = train_df
         self.valid_df = valid_df
         self.holdout_df = holdout_df
         self.model = None
-        self.log_lines: list[str] = []
-        self.callbacks = callbacks or self.config.callbacks
-        self.logger = logger
+        self.log_lines = []
+        self.logger = self._initialize_logger()
 
     def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
         with open(config_path, "r") as f:
@@ -147,12 +151,31 @@ class GBMModelTrainer:
             local_path = Path(output_dir) / filename
             local_path.parent.mkdir(parents=True, exist_ok=True)
             return local_path, None
+        
+    def _initialize_logger(self, name="xgb-trainer") -> logging.Logger:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
 
-    def _log(self, message: str) -> None:
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.log_lines.append(f"[{timestamp}] {message}")
-        if hasattr(self, "logger") and self.logger:
-            self.logger.info(message)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+        if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+            log_path, _ = self._resolve_output_path(self.config.log_file)
+            file_handler = logging.FileHandler(log_path, mode='w')  # overwrite log file
+            file_handler.setLevel(logging.INFO)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+
+        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            logger.addHandler(stream_handler)
+
+        if not any(isinstance(h, ListLogHandler) for h in logger.handlers):
+            memory_handler = ListLogHandler(self.log_lines)
+            memory_handler.setFormatter(formatter)
+            logger.addHandler(memory_handler)
+
+        return logger
 
     def _write_log(self) -> str:
         local_path, s3_path = self._resolve_output_path(self.config.log_file)
@@ -161,10 +184,41 @@ class GBMModelTrainer:
 
         if s3_path:
             upload_file_to_s3(local_path, s3_path)
-            self._log(f"Log uploaded to {s3_path}")
+            self.logger.info(f"Log uploaded to {s3_path}")
 
         return str(local_path)
 
+    def _predict(self, X: pd.DataFrame, base_margin: Optional[pd.Series] = None) -> np.ndarray:
+        dmatrix = DMatrix(X, base_margin=base_margin, enable_categorical=True)
+        preds = self.model.predict(dmatrix, output_margin=False)
+
+        # For logistic regression return probability of positive class
+        if preds.ndim == 1:
+            return preds.astype(float)
+        elif preds.ndim == 2:
+            return preds[:, 1]
+        else:
+            raise ValueError(f"Unexpected prediction dimension: {preds.ndim}")
+
+    def _prepare_callbacks(self) -> List[TrainingCallback]:
+        callbacks = []
+
+        # Always include logging
+        callbacks.append(LogEvalCallback(
+            period=self.config.log_eval_period,
+            logger=self.logger,
+        ))
+
+        # Optionally include early stopping
+        if isinstance(self.config.early_stopping_rounds, int):
+            callbacks.append(EarlyStoppingCallback(
+                stopping_rounds=self.config.early_stopping_rounds,
+                metric_name=self.config.early_stopping_metric,
+                maximize=self.config.early_stopping_maximize,
+            ))
+
+        return callbacks
+    
     def _fit_model(
         self,
         X_train: pd.DataFrame,
@@ -175,24 +229,32 @@ class GBMModelTrainer:
         base_margin_valid: Optional[pd.Series] = None,
     ) -> None:
         params = dict(self.config.hyperparameters or {})
-        num_round = int(params.pop("num_boost_round", params.pop("n_estimators", 100)))
+        num_round = int(params.pop("num_boost_round", params.pop("n_estimators", 200)))
 
-        dtrain = DMatrix(X_train, label=y_train, base_margin=base_margin_train)
+        dtrain = DMatrix(X_train, label=y_train, base_margin=base_margin_train, enable_categorical=True)
         evals = []
         if y_valid is not None:
             dvalid = DMatrix(
                 X_valid,
                 label=y_valid,
                 base_margin=base_margin_valid,
+                enable_categorical=True,
             )
             evals = [(dvalid, "validation")]
+
+        # Extract custom objective if provided (must be callable)
+        objective = self.config.hyperparameters["objective"]
+        custom_obj = objective if callable(objective) else None
+        if isinstance(objective, str):
+            params["objective"] = objective  # set in params only if it's a string
 
         self.model = xgb_train(
             params,
             dtrain,
             num_boost_round=num_round,
             evals=evals,
-            callbacks=self.callbacks,
+            callbacks=self._prepare_callbacks(),
+            obj=custom_obj,
             verbose_eval=False,
         )
 
@@ -210,7 +272,7 @@ class GBMModelTrainer:
         tuning_cfg = self.config.tuning
         raw_space = search_ranges or tuning_cfg.search_space
         if not raw_space:
-            self._log("No tuning search space provided; skipping tuning")
+            self.logger.info("No tuning search space provided; skipping tuning")
             return pd.DataFrame()
 
         search_space = parse_search_space(raw_space)
@@ -240,14 +302,12 @@ class GBMModelTrainer:
                 base_margin_train,
                 base_margin_valid,
             )
-            preds = self.model.predict(
-                DMatrix(X_valid, base_margin=base_margin_valid)
-            )
+            preds = self._predict(X_valid, base_margin=base_margin_valid)
             if tuning_cfg.objective_func is None:
                 score = float(np.mean((y_valid - preds) ** 2))
             else:
                 score = float(tuning_cfg.objective_func(y_valid, preds))
-            self._log(f"Trial {objective.counter}: score={score:.5f} params={params}")
+            self.logger.info(f"Trial {objective.counter}: score={score:.5f} params={params}")
             objective.counter += 1
             return score
 
@@ -263,10 +323,10 @@ class GBMModelTrainer:
                 tuning_cfg.tuning_file
             )
             tuning_df.to_csv(tuning_local_path, index=False)
-            self._log(f"Tuning DF saved to {tuning_local_path.resolve()}")
+            self.logger.info(f"Tuning DF saved to {tuning_local_path.resolve()}")
             if tuning_s3_path:
                 upload_file_to_s3(tuning_local_path, tuning_s3_path)
-                self._log(f"Tuning DF uploaded to {tuning_s3_path}")
+                self.logger.info(f"Tuning DF uploaded to {tuning_s3_path}")
 
         return tuning_df
 
@@ -302,37 +362,39 @@ class GBMModelTrainer:
         )
         fit_time = time.time() - start
 
-        self._log(f"Training completed in {fit_time:.4f} seconds")
-        self._log("Model: XGBoost Booster")
-        self._log(f"Hyperparameters: {self.config.hyperparameters}")
+        self.logger.info(f"Training completed in {fit_time:.4f} seconds")
+        self.logger.info("Model: XGBoost Booster")
+        self.logger.info(f"Hyperparameters: {self.config.hyperparameters}")
 
         n_rows, n_cols = self.train_df.shape
-        self._log(f"Training data shape: {self.train_df.shape}")
-        self._log(f"Validation data shape: {self.valid_df.shape}")
-        self._log(
+        self.logger.info(f"Training data shape: {self.train_df.shape}")
+        self.logger.info(f"Validation data shape: {self.valid_df.shape}")
+        self.logger.info(
             f"Number of predictors: {n_cols - 1 if self.config.actual_col in self.train_df.columns else n_cols}"
         )
-        self._log(f"Target column: '{self.config.actual_col}'")
-        self._log(f"Prediction column: '{self.config.predicted_col}'")
-        if y_valid is not None:
-            preds_valid = self.model.predict(
-                DMatrix(X_valid, base_margin=base_margin_valid)
-            )
-            score = float(np.mean((y_valid - preds_valid) ** 2))
-            self._log(f"Validation MSE: {score:.4f}")
+        self.logger.info(f"Target column: '{self.config.actual_col}'")
+        self.logger.info(f"Prediction column: '{self.config.predicted_col}'")
+
+        # Save model and log path
+        model_path, model_s3_path = self._resolve_output_path(self.config.model_file)
+        self.model.save_model(model_path)
+        self.logger.info(f"Model saved to {model_path.resolve()}")
+        if model_s3_path:
+            upload_file_to_s3(model_path, model_s3_path)
+            self.logger.info(f"Model uploaded to {model_s3_path}")
 
         # -------------------------------------------------------
         if self.config.output_report:
+
+            # If plots to add are not specified, output model fit plots
+            all_plots = self.config.plots_to_add or default_report_plots
+
             actual_col = self.config.actual_col
             pred_col = self.config.predicted_col
 
             # Predict on train and validation
-            train_preds = self.model.predict(
-                DMatrix(X_train, base_margin=base_margin_train)
-            )
-            valid_preds = self.model.predict(
-                DMatrix(X_valid, base_margin=base_margin_valid)
-            )
+            train_preds = self._predict(X_train, base_margin=base_margin_train)
+            valid_preds = self._predict(X_valid, base_margin=base_margin_valid)
 
             # Assign predictions
             train_df_with_preds = self.train_df.copy()
@@ -345,9 +407,7 @@ class GBMModelTrainer:
             valid_df_with_preds["split"] = "V"
 
             if self.holdout_df is not None and not self.holdout_df.empty:
-                holdout_preds = self.model.predict(
-                    DMatrix(X_holdout, base_margin=base_margin_holdout)
-                )
+                holdout_preds = self._predict(X_holdout, base_margin=base_margin_holdout)
                 holdout_df_with_preds = self.holdout_df.copy()
                 holdout_df_with_preds[pred_col] = holdout_preds
                 holdout_df_with_preds["split"] = "H"
@@ -369,10 +429,10 @@ class GBMModelTrainer:
                 predicted_col=pred_col,
                 **self.config.report_params,
             )
-            if self.config.tabulate_vars:
+            if len(self.config.tabulate_vars) > 0:
                 mar.add_tabulation(variables=self.config.tabulate_vars)
 
-            for plot_cfg in self.config.plots_to_add:
+            for plot_cfg in all_plots:
                 func_name = plot_cfg.get("plot")
                 title = plot_cfg.get("title", func_name)
                 kwargs = plot_cfg.get("kwargs", {})
@@ -380,9 +440,9 @@ class GBMModelTrainer:
                 try:
                     plot_func = getattr(plots, func_name)
                     mar.add_plot(plot_func, title, **kwargs)
-                    self._log(f"✔️ Added plot: {title} ({func_name})")
+                    self.logger.info(f"Added plot: {title} ({func_name})")
                 except Exception as e:
-                    self._log(f"⚠️ Failed to add plot '{func_name}': {e}")
+                    self.logger.info(f"Failed to add plot '{func_name}': {e}")
 
             # Save locally and (optionally) to S3
             report_local_path, report_s3_path = self._resolve_output_path(
@@ -390,25 +450,29 @@ class GBMModelTrainer:
             )
             report_local_path.parent.mkdir(parents=True, exist_ok=True)
             mar.save(report_local_path)
-            self._log(f"Analysis report saved to {report_local_path.resolve()}")
+            self.logger.info(f"Analysis report saved to {report_local_path.resolve()}")
 
             if report_s3_path:
                 upload_file_to_s3(report_local_path, report_s3_path)
-                self._log(f"Analysis report uploaded to {report_s3_path}")
+                self.logger.info(f"Analysis report uploaded to {report_s3_path}")
 
         # Save a copy of the config
         config_local_path, config_s3_path = self._resolve_output_path("config.yaml")
         shutil.copy(self.config_path, config_local_path)
-        self._log(f"Saved config to {config_local_path}")
+        self.logger.info(f"Saved config to {config_local_path}")
 
         if config_s3_path:
             upload_file_to_s3(config_local_path, config_s3_path)
-            self._log(f"Config uploaded to {config_s3_path}")
+            self.logger.info(f"Config uploaded to {config_s3_path}")
 
         # -------------------------------------------------------
+        # Save and shutdown logger
         log_file = None
         if self.config.output_log:
             log_file = self._write_log()
+
+        self.logger.handlers.clear()
+        logging.shutdown()
 
 
 def parse_search_space(raw_space: dict) -> dict:
@@ -462,3 +526,13 @@ def upload_file_to_s3(local_path: Path, s3_path: str) -> None:
 
     s3 = boto3.client("s3")
     s3.upload_file(str(local_path), bucket, key)
+
+
+class ListLogHandler(logging.Handler):
+    def __init__(self, log_list: List[str]):
+        super().__init__()
+        self.log_list = log_list
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.log_list.append(msg)

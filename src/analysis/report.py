@@ -31,15 +31,6 @@ class ModelAnalysisReport:
         self._sections: List[str] = []
 
     # ------------------------------------------------------------------
-    def mse(self) -> float:
-        """Return mean squared error."""
-        return float(((self.df[self.actual_col] - self.df[self.predicted_col]) ** 2).mean())
-
-    def mae(self) -> float:
-        """Return mean absolute error."""
-        return float((self.df[self.actual_col] - self.df[self.predicted_col]).abs().mean())
-
-    # ------------------------------------------------------------------
     # Convenience plotting helpers
     def _iter_splits(self) -> Iterable[tuple[str | None, pd.DataFrame]]:
             if self.split_col in self.df.columns:
@@ -132,17 +123,6 @@ class ModelAnalysisReport:
         return figs if len(figs) > 1 else next(iter(figs.values()))
 
     # ------------------------------------------------------------------
-    def compare_models_discrepancy(
-        self, other_pred_col: str, n: int = 10, by: Optional[Iterable[str]] = None
-    ) -> pd.DataFrame:
-        cols = [self.actual_col, self.predicted_col, other_pred_col]
-        if by:
-            cols.extend(by)
-        df = self.df[cols].copy()
-        df["abs_diff"] = (df[self.predicted_col] - df[other_pred_col]).abs()
-        return df.nlargest(n, "abs_diff")
-
-    # ------------------------------------------------------------------
     def to_html(self) -> str:
         """Return the assembled HTML report as a string."""
         html_output = "<h1>Model Analysis Report</h1>"
@@ -194,7 +174,7 @@ class ModelAnalysisReport:
         html_output += "</body></html>"
         with open(output_html, "w") as f:
             f.write(html_output)
-        print(f"✅ Analysis report generated at {output_html}")
+        print(f"Analysis report generated at {output_html}")
 
 
 # ----------------------------------------------------------------------
