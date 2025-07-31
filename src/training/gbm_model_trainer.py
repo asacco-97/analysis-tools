@@ -108,15 +108,6 @@ class GBMModelTrainer:
                 cfg["tuning"]["search_space"] = parse_search_space(raw_space)
             cfg["tuning"] = TuningConfig(**cfg.get("tuning", {}))
 
-        # Evaluation section can be specified either under 'evaluation' or via
-        # legacy top-level keys
-        eval_cfg = cfg.get("evaluation", {})
-        legacy_keys = ["output_report", "report_file", "report_params", "plots_to_add", "tabulate_vars"]
-        for key in legacy_keys:
-            if key in cfg and key not in eval_cfg:
-                eval_cfg[key] = cfg[key]
-        cfg["evaluation"] = EvaluationConfig(**eval_cfg)
-
         return GBMModelTrainerConfig(**cfg)
 
     def _split_xy(
