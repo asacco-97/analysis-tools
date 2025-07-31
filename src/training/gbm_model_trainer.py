@@ -51,6 +51,18 @@ class GBMModelTrainerConfig:
     plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
     tabulate_vars: List[str] = field(default_factory=list)
     tuning: TuningConfig = field(default_factory=TuningConfig)
+    callbacks: List[Dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "name": "log_eval",
+                "period": 50
+            },
+            {
+                "name": "early_stopping", 
+                "stopping_rounds": 30
+            },
+        ]
+    )
 
 class GBMModelTrainer:
     def __init__(
@@ -85,6 +97,14 @@ class GBMModelTrainer:
             cfg["tuning"]["search_space"] = parse_search_space(raw_space)
             cfg["tuning"] = TuningConfig(**cfg["tuning"])
     
+        # Parse evaluation_metrics if provided
+        if "evaluation_metrics" in cfg:
+            # keep strings or resolve dotted-path callables
+            cfg["evaluation_metrics"] = [
+                get_scorer(m) if isinstance(m, str) else m
+                for m in cfg["evaluation_metrics"]
+            ]
+
         return GBMModelTrainerConfig(**cfg)
 
     def _split_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series | None]:
@@ -132,9 +152,9 @@ class GBMModelTrainer:
 
     def _write_log(self) -> str:
         local_path, s3_path = self._resolve_output_path(self.config.log_file)
-        with open(local_path, "w") as f:
+        with open(local_path, "w", encoding="utf-8") as f:
             f.write("\n".join(self.log_lines))
-    
+            
         if s3_path:
             upload_file_to_s3(local_path, s3_path)
             self._log(f"Log uploaded to {s3_path}")
@@ -196,6 +216,49 @@ class GBMModelTrainer:
         if isinstance(self.model, (XGBClassifier, XGBRegressor)):
             fit_kwargs["verbose"] = False
         
+        # Assemble callbacks
+        cb_funcs: List[Callable] = []
+        for cb in self.config.callbacks:
+            name = cb.get("name")
+            # ---------- LOG EVALUATION -------------
+            if name == "log_eval":
+                period = cb.get("period", 50)
+                if isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
+                    import lightgbm as lgb
+                    cb_funcs.append(lgb.callback.log_evaluation(period=period))
+                    
+                # XGBoost sklearn: use 'verbose'
+                elif isinstance(self.model, (XGBClassifier, XGBRegressor)):
+                    fit_kwargs["verbose"] = period
+
+                elif isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
+                    # CatBoost prints metrics every `verbose` iterations
+                    fit_kwargs["verbose"] = period
+
+            # ---------- EARLY STOPPING -------------
+            elif name == "early_stopping":
+                rounds = cb.get("stopping_rounds", 50)
+                # LightGBM 
+                if isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
+                    import lightgbm as lgb
+                    cb_funcs.append(
+                        lgb.callback.early_stopping(
+                            stopping_rounds=rounds, first_metric_only=True
+                        )
+                    )
+
+                # XGBoost sklearn: pass early_stopping_rounds
+                elif isinstance(self.model, (XGBClassifier, XGBRegressor)):
+                    fit_kwargs["early_stopping_rounds"] = rounds
+
+                elif isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
+                    # CatBoost uses `early_stopping_rounds` + optional `use_best_model`
+                    fit_kwargs["early_stopping_rounds"] = rounds
+                    fit_kwargs["use_best_model"] = True
+
+        if cb_funcs:
+            fit_kwargs["callbacks"] = cb_funcs
+
         # Fit
         if y_train is not None:
             self.model.fit(X_train, y_train, **fit_kwargs)
