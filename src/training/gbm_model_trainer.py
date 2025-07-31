@@ -50,12 +50,22 @@ class TuningConfig:
 
 
 @dataclass
+class EvaluationConfig:
+    """Configuration for model evaluation and reporting."""
+
+    output_report: bool = False
+    report_file: str = "model_analysis.html"
+    report_params: Dict[str, Any] = field(default_factory=dict)
+    plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
+    tabulate_vars: List[str] = field(default_factory=list)
+
+
+@dataclass
 class GBMModelTrainerConfig:
     actual_col: str
     predicted_col: str
     output_dir: str = "outputs"
     log_file: str = "training.log"
-    report_file: str = "model_analysis.html"
     model_file: str = "model_obj.json"
     hyperparameters: Dict[str, Any] = field(default_factory=dict)
     feval: Optional[Union[str, Callable[[pd.Series, np.ndarray], float]]] = None
@@ -67,11 +77,7 @@ class GBMModelTrainerConfig:
     early_stopping_metric: Optional[str] = None
     early_stopping_maximize: bool = False
 
-    # Params for Model Analysis Report if outputting
-    output_report: bool = False
-    report_params: Dict[str, Any] = field(default_factory=dict)
-    plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
-    tabulate_vars: List[str] = field(default_factory=list)
+    evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     tuning: TuningConfig = field(default_factory=TuningConfig)
 
 class GBMModelTrainer:
@@ -96,10 +102,11 @@ class GBMModelTrainer:
             cfg = yaml.safe_load(f) or {}
 
         # Parse tuning config and search space
-        if "tuning" in cfg and "search_space" in cfg["tuning"]:
-            raw_space = cfg["tuning"]["search_space"]
-            cfg["tuning"]["search_space"] = parse_search_space(raw_space)
-            cfg["tuning"] = TuningConfig(**cfg["tuning"])
+        if "tuning" in cfg:
+            if "search_space" in cfg["tuning"]:
+                raw_space = cfg["tuning"]["search_space"]
+                cfg["tuning"]["search_space"] = parse_search_space(raw_space)
+            cfg["tuning"] = TuningConfig(**cfg.get("tuning", {}))
 
         return GBMModelTrainerConfig(**cfg)
 
@@ -343,14 +350,6 @@ class GBMModelTrainer:
             y_valid,
             base_margin_valid,
         ) = self._split_xy(self._prepare_dataframe(self.valid_df))
-        if self.holdout_df is not None and not self.holdout_df.empty:
-            (
-                X_holdout,
-                y_holdout,
-                base_margin_holdout,
-            ) = self._split_xy(
-                self._prepare_dataframe(self.holdout_df)
-            )
         
         self._fit_model(
             X_train,
@@ -383,79 +382,6 @@ class GBMModelTrainer:
             upload_file_to_s3(model_path, model_s3_path)
             self.logger.info(f"Model uploaded to {model_s3_path}")
 
-        # -------------------------------------------------------
-        if self.config.output_report:
-
-            # If plots to add are not specified, output model fit plots
-            all_plots = self.config.plots_to_add or default_report_plots
-
-            actual_col = self.config.actual_col
-            pred_col = self.config.predicted_col
-
-            # Predict on train and validation
-            train_preds = self._predict(X_train, base_margin=base_margin_train)
-            valid_preds = self._predict(X_valid, base_margin=base_margin_valid)
-
-            # Assign predictions
-            train_df_with_preds = self.train_df.copy()
-            valid_df_with_preds = self.valid_df.copy()
-            train_df_with_preds[pred_col] = train_preds
-            valid_df_with_preds[pred_col] = valid_preds
-
-            # Add split for reporting
-            train_df_with_preds["split"] = "T"
-            valid_df_with_preds["split"] = "V"
-
-            if self.holdout_df is not None and not self.holdout_df.empty:
-                holdout_preds = self._predict(X_holdout, base_margin=base_margin_holdout)
-                holdout_df_with_preds = self.holdout_df.copy()
-                holdout_df_with_preds[pred_col] = holdout_preds
-                holdout_df_with_preds["split"] = "H"
-
-                # Concatenate in same order as used for predictions
-                df = pd.concat(
-                    [train_df_with_preds, valid_df_with_preds, holdout_df_with_preds],
-                    axis=0,
-                ).reset_index(drop=True)
-            else:
-                # Concatenate in same order as used for predictions
-                df = pd.concat(
-                    [train_df_with_preds, valid_df_with_preds], axis=0
-                ).reset_index(drop=True)
-
-            mar = ModelAnalysisReport(
-                df,
-                actual_col=actual_col,
-                predicted_col=pred_col,
-                **self.config.report_params,
-            )
-            if len(self.config.tabulate_vars) > 0:
-                mar.add_tabulation(variables=self.config.tabulate_vars)
-
-            for plot_cfg in all_plots:
-                func_name = plot_cfg.get("plot")
-                title = plot_cfg.get("title", func_name)
-                kwargs = plot_cfg.get("kwargs", {})
-
-                try:
-                    plot_func = getattr(plots, func_name)
-                    mar.add_plot(plot_func, title, **kwargs)
-                    self.logger.info(f"Added plot: {title} ({func_name})")
-                except Exception as e:
-                    self.logger.info(f"Failed to add plot '{func_name}': {e}")
-
-            # Save locally and (optionally) to S3
-            report_local_path, report_s3_path = self._resolve_output_path(
-                self.config.report_file
-            )
-            report_local_path.parent.mkdir(parents=True, exist_ok=True)
-            mar.save(report_local_path)
-            self.logger.info(f"Analysis report saved to {report_local_path.resolve()}")
-
-            if report_s3_path:
-                upload_file_to_s3(report_local_path, report_s3_path)
-                self.logger.info(f"Analysis report uploaded to {report_s3_path}")
-
         # Save a copy of the config
         config_local_path, config_s3_path = self._resolve_output_path("config.yaml")
         shutil.copy(self.config_path, config_local_path)
@@ -465,14 +391,94 @@ class GBMModelTrainer:
             upload_file_to_s3(config_local_path, config_s3_path)
             self.logger.info(f"Config uploaded to {config_s3_path}")
 
-        # -------------------------------------------------------
-        # Save and shutdown logger
-        log_file = None
         if self.config.output_log:
-            log_file = self._write_log()
+            self._write_log()
 
-        self.logger.handlers.clear()
-        logging.shutdown()
+    def evaluate(self) -> None:
+        """Generate a :class:`ModelAnalysisReport` using the trained model."""
+
+        eval_cfg = self.config.evaluation
+        if not eval_cfg.output_report:
+            return
+
+        (
+            X_train,
+            y_train,
+            base_margin_train,
+        ) = self._split_xy(self._prepare_dataframe(self.train_df))
+        (
+            X_valid,
+            y_valid,
+            base_margin_valid,
+        ) = self._split_xy(self._prepare_dataframe(self.valid_df))
+
+        if self.holdout_df is not None and not self.holdout_df.empty:
+            (
+                X_holdout,
+                y_holdout,
+                base_margin_holdout,
+            ) = self._split_xy(self._prepare_dataframe(self.holdout_df))
+        else:
+            X_holdout = y_holdout = base_margin_holdout = None
+
+        # Predict
+        train_preds = self._predict(X_train, base_margin=base_margin_train)
+        valid_preds = self._predict(X_valid, base_margin=base_margin_valid)
+
+        actual_col = self.config.actual_col
+        pred_col = self.config.predicted_col
+
+        train_df_with_preds = self.train_df.copy()
+        valid_df_with_preds = self.valid_df.copy()
+        train_df_with_preds[pred_col] = train_preds
+        valid_df_with_preds[pred_col] = valid_preds
+        train_df_with_preds["split"] = "T"
+        valid_df_with_preds["split"] = "V"
+
+        frames = [train_df_with_preds, valid_df_with_preds]
+
+        if X_holdout is not None:
+            holdout_preds = self._predict(X_holdout, base_margin=base_margin_holdout)
+            holdout_df_with_preds = self.holdout_df.copy()
+            holdout_df_with_preds[pred_col] = holdout_preds
+            holdout_df_with_preds["split"] = "H"
+            frames.append(holdout_df_with_preds)
+
+        df = pd.concat(frames, axis=0).reset_index(drop=True)
+
+        mar = ModelAnalysisReport(
+            df,
+            actual_col=actual_col,
+            predicted_col=pred_col,
+            **eval_cfg.report_params,
+        )
+
+        if len(eval_cfg.tabulate_vars) > 0:
+            mar.add_tabulation(variables=eval_cfg.tabulate_vars)
+
+        plots_to_add = eval_cfg.plots_to_add or default_report_plots
+        for plot_cfg in plots_to_add:
+            func_name = plot_cfg.get("plot")
+            title = plot_cfg.get("title", func_name)
+            kwargs = plot_cfg.get("kwargs", {})
+            try:
+                plot_func = getattr(plots, func_name)
+                mar.add_plot(plot_func, title, **kwargs)
+                self.logger.info(f"Added plot: {title} ({func_name})")
+            except Exception as e:
+                self.logger.info(f"Failed to add plot '{func_name}': {e}")
+
+        report_local_path, report_s3_path = self._resolve_output_path(eval_cfg.report_file)
+        report_local_path.parent.mkdir(parents=True, exist_ok=True)
+        mar.save(report_local_path)
+        self.logger.info(f"Analysis report saved to {report_local_path.resolve()}")
+
+        if report_s3_path:
+            upload_file_to_s3(report_local_path, report_s3_path)
+            self.logger.info(f"Analysis report uploaded to {report_s3_path}")
+
+        if self.config.output_log:
+            self._write_log()
 
 
 def parse_search_space(raw_space: dict) -> dict:

@@ -24,7 +24,8 @@ A curated set of analysis scripts, utilities, and notebooks for modeling, data e
 
 ## Model Training and Hyperparameter Tuning
 
-`GBMModelTrainer` is a class that supports GBM model training, logging, and evaluation using XGBoost, CATBoost, or LightGBM. 
+`GBMModelTrainer` is a class that supports GBM model training, evaluation and hyperparameter tuning using XGBoost.
+The three stages can be run independently via `trainer.train()`, `trainer.evaluate()` and `trainer.tune()`.
 
 ```yaml
 actual_col: target
@@ -55,6 +56,8 @@ tuning:
   n_iter: 10
   # optionally a path to write tuning results
   tuning_file: tuning.csv
+evaluation:
+  output_report: true
 ```
 
 Call `trainer.tune()` before `trainer.train()` and the best parameters will be
