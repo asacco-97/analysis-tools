@@ -20,6 +20,7 @@ from skopt import gp_minimize
 from analysis.report import ModelAnalysisReport
 from analysis import plots
 from scoring.callbacks import LogEvalCallback, EarlyStoppingCallback
+from scoring.scorers import get_scorer
 from xgboost.callback import TrainingCallback
 
 default_report_plots = [
@@ -61,7 +62,7 @@ class EvaluationConfig:
 
 
 @dataclass
-class GBMModelTrainerConfig:
+class TrainingConfig:
     actual_col: str
     predicted_col: str
     output_dir: str = "outputs"
@@ -80,7 +81,7 @@ class GBMModelTrainerConfig:
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     tuning: TuningConfig = field(default_factory=TuningConfig)
 
-class GBMModelTrainer:
+class XGBModelTrainer:
     def __init__(
         self,
         config_path: str,
@@ -97,18 +98,20 @@ class GBMModelTrainer:
         self.log_lines = []
         self.logger = self._initialize_logger()
 
-    def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
+    def _load_config(self, config_path: str) -> TrainingConfig:
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f) or {}
 
-        # Parse tuning config and search space
         if "tuning" in cfg:
-            if "search_space" in cfg["tuning"]:
-                raw_space = cfg["tuning"]["search_space"]
-                cfg["tuning"]["search_space"] = parse_search_space(raw_space)
-            cfg["tuning"] = TuningConfig(**cfg.get("tuning", {}))
+            if isinstance(cfg["tuning"].get("search_space"), dict):
+                cfg["tuning"]["search_space"] = parse_search_space(cfg["tuning"]["search_space"])
+                cfg["tuning"]["objective_func"] = get_scorer(cfg["tuning"]["objective_func"])
+            cfg["tuning"] = TuningConfig(**cfg["tuning"])
 
-        return GBMModelTrainerConfig(**cfg)
+        if "evaluation" in cfg and isinstance(cfg["evaluation"], dict):
+            cfg["evaluation"] = EvaluationConfig(**cfg["evaluation"])
+
+        return TrainingConfig(**cfg)
 
     def _split_xy(
         self, df: pd.DataFrame
@@ -275,14 +278,13 @@ class GBMModelTrainer:
             ``(low, high)`` tuples/lists or lists of categorical values.
             When omitted, the ranges defined in the configuration file are used.
         """
-
+        self.logger.info("---"*25)
+        self.logger.info("BEGINNING BAYESIAN HYPERPARAMETER TUNING")
         tuning_cfg = self.config.tuning
-        raw_space = search_ranges or tuning_cfg.search_space
-        if not raw_space:
+        search_space = parse_search_space(search_ranges) if search_ranges else tuning_cfg.search_space
+        if not search_space:
             self.logger.info("No tuning search space provided; skipping tuning")
             return pd.DataFrame()
-
-        search_space = parse_search_space(raw_space)
 
         (
             X_train,
@@ -323,7 +325,10 @@ class GBMModelTrainer:
         best_params = {name: val for name, val in zip(param_names, result.x)}
         self.config.hyperparameters.update(best_params)
 
-        tuning_df = pd.DataFrame({"params": result.x_iters, "score": result.func_vals})
+        # Output df containing tuning results
+        tuning_df = pd.DataFrame(result.x_iters, columns=param_names)
+        tuning_df["score"] = result.func_vals
+        tuning_df = tuning_df.sort_values("score", ascending=True).reset_index(drop=True)
 
         if tuning_cfg.output_tuning and tuning_cfg.tuning_file:
             tuning_local_path, tuning_s3_path = self._resolve_output_path(
@@ -339,6 +344,10 @@ class GBMModelTrainer:
 
     def train(self) -> None:
         """Main training routine."""
+        
+        self.logger.info("---"*25)
+        self.logger.info("BEGINNING MODEL TRAINING")
+
         start = time.time()
         (
             X_train,
@@ -396,6 +405,9 @@ class GBMModelTrainer:
 
     def evaluate(self) -> None:
         """Generate a :class:`ModelAnalysisReport` using the trained model."""
+
+        self.logger.info("---"*25)
+        self.logger.info("BEGINNING MODEL EVALUATION")
 
         eval_cfg = self.config.evaluation
         if not eval_cfg.output_report:
