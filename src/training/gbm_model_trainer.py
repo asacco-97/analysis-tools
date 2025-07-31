@@ -1,39 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 import logging
 import yaml
-import json
 import time
-import inspect
-from typing import Any, Dict, Tuple, Optional, Iterable, List, Union, Callable
+from typing import Any, Dict, Tuple, Optional, Iterable, List, Callable
 import pandas as pd
 import numpy as np
+
 if not hasattr(np, "int"):
     np.int = int
 import shutil
 
-from xgboost import XGBClassifier, XGBRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
-from catboost import CatBoostClassifier, CatBoostRegressor
+from xgboost import DMatrix, train as xgb_train
 from skopt.space import Real, Integer, Categorical
+from skopt import gp_minimize
 
 from analysis.report import ModelAnalysisReport
 from analysis import plots
-from metrics.scorers import get_scorer
-        
+
+
 @dataclass
 class TuningConfig:
     """Configuration for hyperparameter tuning."""
 
     search_space: Dict[str, Any] = field(default_factory=dict)
     n_iter: int = 10
-    scoring: Union[str, Callable] = None
-    cv: Union[str, int] = None
+    objective_func: Optional[Callable[[pd.Series, np.ndarray], float]] = None
     output_tuning: bool = False
-    n_jobs: int = 1
-    tuning_file: str = None
+    tuning_file: str | None = None
+
 
 @dataclass
 class GBMModelTrainerConfig:
@@ -43,7 +40,9 @@ class GBMModelTrainerConfig:
     log_file: str = "training.log"
     report_file: str = "model_analysis.html"
     hyperparameters: Dict[str, Any] = field(default_factory=dict)
+    callbacks: List[Callable] = field(default_factory=list)
     output_log: bool = True
+    base_margin_col: str | None = None
 
     # Params for Model Analysis Report if outputting
     output_report: bool = False
@@ -64,6 +63,7 @@ class GBMModelTrainerConfig:
         ]
     )
 
+
 class GBMModelTrainer:
     def __init__(
         self,
@@ -71,7 +71,10 @@ class GBMModelTrainer:
         config_path: str,
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
-        holdout_df: pd.DataFrame = None
+        holdout_df: pd.DataFrame | None = None,
+        *,
+        callbacks: Optional[List[Callable]] = None,
+        logger: Optional[logging.Logger] = None,
     ) -> None:
         self.model_class = model_class
         self.config_path = config_path
@@ -81,46 +84,45 @@ class GBMModelTrainer:
         self.holdout_df = holdout_df
         self.model = None
         self.log_lines: list[str] = []
+        self.callbacks = callbacks or self.config.callbacks
+        self.logger = logger
 
     def _load_config(self, config_path: str) -> GBMModelTrainerConfig:
         with open(config_path, "r") as f:
             cfg = yaml.safe_load(f) or {}
-    
+
         # Parse tuning config and search space
         if "tuning" in cfg and "search_space" in cfg["tuning"]:
-
-            # Parse scoring metric if custom
-            cfg["tuning"]["scoring"] = get_scorer(cfg["tuning"].get("scoring", None))
-
-            # Parse low and high bounds of search space 
             raw_space = cfg["tuning"]["search_space"]
             cfg["tuning"]["search_space"] = parse_search_space(raw_space)
             cfg["tuning"] = TuningConfig(**cfg["tuning"])
-    
-        # Parse evaluation_metrics if provided
-        if "evaluation_metrics" in cfg:
-            # keep strings or resolve dotted-path callables
-            cfg["evaluation_metrics"] = [
-                get_scorer(m) if isinstance(m, str) else m
-                for m in cfg["evaluation_metrics"]
-            ]
 
         return GBMModelTrainerConfig(**cfg)
 
-    def _split_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series | None]:
+    def _split_xy(
+        self, df: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, pd.Series | None, Optional[pd.Series]]:
+        """Split dataframe into features, target, and optional base margin."""
+
+        df_proc = df.copy()
+        base_margin = None
+        if self.config.base_margin_col and self.config.base_margin_col in df_proc.columns:
+            base_margin = df_proc.pop(self.config.base_margin_col)
+
         actual_col = self.config.actual_col
-        if actual_col and actual_col in df.columns:
-            X = df.drop(columns=[actual_col])
-            y = df[actual_col]
-            return X, y
-        return df, None
+        if actual_col and actual_col in df_proc.columns:
+            y = df_proc.pop(actual_col)
+            X = df_proc
+            return X, y, base_margin
+
+        return df_proc, None, base_margin
 
     def _prepare_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Ensure object columns are cast to categorical."""
-        df_clean = df.copy()        
+        df_clean = df.copy()
         for col in df_clean.select_dtypes(include=["object", "string"]).columns:
             df_clean[col] = df_clean[col].astype("category")
-            
+
         return df_clean
 
     def _ensure_parent_dir(self, path: str | Path) -> Path:
@@ -134,7 +136,7 @@ class GBMModelTrainer:
         """
         filename = Path(filename).name
         output_dir = self.config.output_dir
-    
+
         if is_s3_path(output_dir):
             local_dir = Path("/tmp/model_outputs")
             local_dir.mkdir(parents=True, exist_ok=True)
@@ -145,252 +147,179 @@ class GBMModelTrainer:
             local_path = Path(output_dir) / filename
             local_path.parent.mkdir(parents=True, exist_ok=True)
             return local_path, None
-    
+
     def _log(self, message: str) -> None:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log_lines.append(f"[{timestamp}] {message}")
+        if hasattr(self, "logger") and self.logger:
+            self.logger.info(message)
 
     def _write_log(self) -> str:
         local_path, s3_path = self._resolve_output_path(self.config.log_file)
         with open(local_path, "w", encoding="utf-8") as f:
             f.write("\n".join(self.log_lines))
-            
+
         if s3_path:
             upload_file_to_s3(local_path, s3_path)
             self._log(f"Log uploaded to {s3_path}")
-    
+
         return str(local_path)
 
-    def _accepts_kwargs(self, cls) -> bool:
-        sig = inspect.signature(cls.__init__)
-        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-    
-    def _filter_valid_kwargs(self, cls, candidate_kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Filter kwargs to only those accepted by the model's __init__ method."""
-        valid_keys = inspect.signature(cls.__init__).parameters
-        valid_kwargs = {}
-        for k, v in candidate_kwargs.items():
-            if k in valid_keys:
-                valid_kwargs[k] = v
-            else:
-                self._log(
-                    f"⚠️ '{k}' is not a valid hyperparameter for {cls.__name__} and will be ignored. "
-                )
-        return valid_kwargs
+    def _fit_model(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_valid: pd.DataFrame,
+        y_valid: pd.Series,
+        base_margin_train: Optional[pd.Series] = None,
+        base_margin_valid: Optional[pd.Series] = None,
+    ) -> None:
+        params = dict(self.config.hyperparameters or {})
+        num_round = int(params.pop("num_boost_round", params.pop("n_estimators", 100)))
 
-    def _instantiate_model(self) -> Any:
-        raw_params = dict(self.config.hyperparameters or {})
-        
-        if "XGB" in self.model_class.__name__:
-            raw_params["enable_categorical"] = True
-            model_params = raw_params
+        dtrain = DMatrix(X_train, label=y_train, base_margin=base_margin_train)
+        evals = []
+        if y_valid is not None:
+            dvalid = DMatrix(
+                X_valid,
+                label=y_valid,
+                base_margin=base_margin_valid,
+            )
+            evals = [(dvalid, "validation")]
 
-        else:
-            # Model-specific defaults
-            if "LGBM" in self.model_class.__name__:
-                raw_params["verbose"] = False
+        self.model = xgb_train(
+            params,
+            dtrain,
+            num_boost_round=num_round,
+            evals=evals,
+            callbacks=self.callbacks,
+            verbose_eval=False,
+        )
 
-            # Filter model parameters for CATBoost and LightGBM
-            model_params = self._filter_valid_kwargs(self.model_class, raw_params)
+    def tune(self, search_ranges: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
+        """Hyperparameter tuning using Bayesian optimization.
 
-        model = self.model_class(**model_params)
-        return model
+        Parameters
+        ----------
+        search_ranges:
+            Optional dictionary mapping parameter names to either
+            ``(low, high)`` tuples/lists or lists of categorical values.
+            When omitted, the ranges defined in the configuration file are used.
+        """
 
-    def _fit_model(self, X_train, y_train, X_valid, y_valid) -> None:
-        fit_kwargs = {}
-        
-        # Detect cat features for CatBoost
-        cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
-        if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-            fit_kwargs["cat_features"] = cat_cols
-            fit_kwargs["verbose"] = False
-            
-        fit_sig = inspect.signature(self.model.fit)
-
-        # Eval set
-        if "eval_set" in fit_sig.parameters:
-            eval_pair = (X_valid, y_valid) if y_valid is not None else (X_valid,)
-            fit_kwargs["eval_set"] = [eval_pair]
-
-        # Special handling
-        if isinstance(self.model, (XGBClassifier, XGBRegressor)):
-            fit_kwargs["verbose"] = False
-        
-        # Assemble callbacks
-        cb_funcs: List[Callable] = []
-        for cb in self.config.callbacks:
-            name = cb.get("name")
-            # ---------- LOG EVALUATION -------------
-            if name == "log_eval":
-                period = cb.get("period", 50)
-                if isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
-                    import lightgbm as lgb
-                    cb_funcs.append(lgb.callback.log_evaluation(period=period))
-                    
-                # XGBoost sklearn: use 'verbose'
-                elif isinstance(self.model, (XGBClassifier, XGBRegressor)):
-                    fit_kwargs["verbose"] = period
-
-                elif isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-                    # CatBoost prints metrics every `verbose` iterations
-                    fit_kwargs["verbose"] = period
-
-            # ---------- EARLY STOPPING -------------
-            elif name == "early_stopping":
-                rounds = cb.get("stopping_rounds", 50)
-                # LightGBM 
-                if isinstance(self.model, (LGBMClassifier, LGBMRegressor)):
-                    import lightgbm as lgb
-                    cb_funcs.append(
-                        lgb.callback.early_stopping(
-                            stopping_rounds=rounds, first_metric_only=True
-                        )
-                    )
-
-                # XGBoost sklearn: pass early_stopping_rounds
-                elif isinstance(self.model, (XGBClassifier, XGBRegressor)):
-                    fit_kwargs["early_stopping_rounds"] = rounds
-
-                elif isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-                    # CatBoost uses `early_stopping_rounds` + optional `use_best_model`
-                    fit_kwargs["early_stopping_rounds"] = rounds
-                    fit_kwargs["use_best_model"] = True
-
-        if cb_funcs:
-            fit_kwargs["callbacks"] = cb_funcs
-
-        # Fit
-        if y_train is not None:
-            self.model.fit(X_train, y_train, **fit_kwargs)
-        else:
-            self.model.fit(X_train, **fit_kwargs)
-
-    def tune(self) -> pd.DataFrame:
-        """Hyperparameter tuning using Bayesian search."""
-        start = time.time()
         tuning_cfg = self.config.tuning
-        if not tuning_cfg.search_space:
+        raw_space = search_ranges or tuning_cfg.search_space
+        if not raw_space:
             self._log("No tuning search space provided; skipping tuning")
-            return
+            return pd.DataFrame()
 
-        X_train, y_train = self._split_xy(self._prepare_dataframe(self.train_df))
-        X_valid, y_valid = self._split_xy(self._prepare_dataframe(self.valid_df))
+        search_space = parse_search_space(raw_space)
 
-        X_all = pd.concat([X_train, X_valid]).reset_index(drop=True)
-        y_all = None
-        if y_train is not None:
-            y_all = pd.concat([y_train, y_valid]).reset_index(drop=True)
+        (
+            X_train,
+            y_train,
+            base_margin_train,
+        ) = self._split_xy(self._prepare_dataframe(self.train_df))
+        (
+            X_valid,
+            y_valid,
+            base_margin_valid,
+        ) = self._split_xy(self._prepare_dataframe(self.valid_df))
 
-        try:
-            from skopt import BayesSearchCV
-        except Exception as exc:  # pragma: no cover - library may be missing
-            raise ImportError(
-                "BayesSearchCV requires scikit-optimize to be installed"
-            ) from exc
+        param_names = list(search_space.keys())
+        dimensions = list(search_space.values())
 
+        def objective(values):
+            params = {k: v for k, v in zip(param_names, values)}
+            self.config.hyperparameters.update(params)
+            self._fit_model(
+                X_train,
+                y_train,
+                X_valid,
+                y_valid,
+                base_margin_train,
+                base_margin_valid,
+            )
+            preds = self.model.predict(
+                DMatrix(X_valid, base_margin=base_margin_valid)
+            )
+            if tuning_cfg.objective_func is None:
+                score = float(np.mean((y_valid - preds) ** 2))
+            else:
+                score = float(tuning_cfg.objective_func(y_valid, preds))
+            self._log(f"Trial {objective.counter}: score={score:.5f} params={params}")
+            objective.counter += 1
+            return score
 
-        # Set base estimator using model parameters
-        if self.model is None:
-            self.model = self._instantiate_model()
-            self._log(f"Instantiated model: {self.model.__class__.__name__}")
-        else:
-            self._log(f"Using existing model: {self.model.__class__.__name__}")
-            
-        base_estimator = self.model
+        objective.counter = 1
+        result = gp_minimize(objective, dimensions, n_calls=tuning_cfg.n_iter)
+        best_params = {name: val for name, val in zip(param_names, result.x)}
+        self.config.hyperparameters.update(best_params)
 
-        # Specify cross validation column or number of folds
-        cv = tuning_cfg.cv
-        if isinstance(cv, int):
-            cv_strategy = cv
-        elif isinstance(cv, str):
-            # If a split col is passed, map to integers
-            unique_splits = X_all[cv].unique()
-            split_map = {split: idx for (idx, split) in enumerate(unique_split)}
-            split_indices = X_all[cv].map(split_map).values
-            cv_strategy = PredefinedSplit(test_fold=split_indices)
-        else:
-            # Default to no cv strategy
-            cv_strategy = None
+        tuning_df = pd.DataFrame({"params": result.x_iters, "score": result.func_vals})
 
-        # Run search
-        search = BayesSearchCV(
-            estimator=base_estimator,
-            search_spaces=tuning_cfg.search_space,
-            n_iter=tuning_cfg.n_iter,
-            scoring=tuning_cfg.scoring,
-            refit=True,
-            return_train_score=True,
-            cv=cv_strategy,
-            n_jobs=tuning_cfg.n_jobs
-        )
-
-        trial = {"num": 0}
-
-        def log_step(result):
-            idx = trial["num"]
-            score = result.func_vals[-1]  # Last function value (score)
-            params_named = dict(zip(search.search_spaces.keys(), result.x_iters[-1]))
-            self._log(f"Trial {idx + 1}: score={score:.4f} params={params_named}")
-            trial["num"] += 1
-
-        
-        # Specify categorical columns for tuning
-        if isinstance(self.model, (CatBoostClassifier, CatBoostRegressor)):
-            cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
-            search.fit(X_all, y_all, callback=log_step, cat_features=cat_cols)
-        else:
-            search.fit(X_all, y_all, callback=log_step)
-
-        self.config.hyperparameters.update(search.best_params_)
-        self.model = search.best_estimator_
-        self._log(
-            f"Tuning complete. Best score {search.best_score_:.4f}; params {search.best_params_}"
-        )
-
-        tuning_df = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
-
-        # Save locally and (optionally) to S3
-        if tuning_cfg.output_tuning:
-            tuning_local_path, tuning_s3_path = self._resolve_output_path(tuning_cfg.tuning_file)
-            tuning_df.to_csv(tuning_local_path)
+        if tuning_cfg.output_tuning and tuning_cfg.tuning_file:
+            tuning_local_path, tuning_s3_path = self._resolve_output_path(
+                tuning_cfg.tuning_file
+            )
+            tuning_df.to_csv(tuning_local_path, index=False)
             self._log(f"Tuning DF saved to {tuning_local_path.resolve()}")
-
             if tuning_s3_path:
-                upload_file_to_s3(tuning_local_path, tuning_local_path)
-                self._log(f"Tuning DF uploaded to {report_s3_path}")
+                upload_file_to_s3(tuning_local_path, tuning_s3_path)
+                self._log(f"Tuning DF uploaded to {tuning_s3_path}")
 
         return tuning_df
 
     def train(self) -> None:
         """Main training routine."""
         start = time.time()
-        X_train, y_train = self._split_xy(self._prepare_dataframe(self.train_df))
-        X_valid, y_valid = self._split_xy(self._prepare_dataframe(self.valid_df))
+        (
+            X_train,
+            y_train,
+            base_margin_train,
+        ) = self._split_xy(self._prepare_dataframe(self.train_df))
+        (
+            X_valid,
+            y_valid,
+            base_margin_valid,
+        ) = self._split_xy(self._prepare_dataframe(self.valid_df))
         if self.holdout_df is not None and not self.holdout_df.empty:
-            X_holdout, y_holdout = self._split_xy(self._prepare_dataframe(self.holdout_df))
-
-        if self.model is None:
-            self.model = self._instantiate_model()
-            self._log(f"Instantiated model: {self.model.__class__.__name__}")
-        else:
-            self._log(f"Using existing model: {self.model.__class__.__name__}")
-
-        self._fit_model(X_train, y_train, X_valid, y_valid)
+            (
+                X_holdout,
+                y_holdout,
+                base_margin_holdout,
+            ) = self._split_xy(
+                self._prepare_dataframe(self.holdout_df)
+            )
+        
+        self._fit_model(
+            X_train,
+            y_train,
+            X_valid,
+            y_valid,
+            base_margin_train,
+            base_margin_valid,
+        )
         fit_time = time.time() - start
 
         self._log(f"Training completed in {fit_time:.4f} seconds")
-        self._log(f"Model: {self.model.__class__.__name__}")
+        self._log("Model: XGBoost Booster")
         self._log(f"Hyperparameters: {self.config.hyperparameters}")
-        
+
         n_rows, n_cols = self.train_df.shape
         self._log(f"Training data shape: {self.train_df.shape}")
         self._log(f"Validation data shape: {self.valid_df.shape}")
-        self._log(f"Number of predictors: {n_cols - 1 if self.config.actual_col in self.train_df.columns else n_cols}")
+        self._log(
+            f"Number of predictors: {n_cols - 1 if self.config.actual_col in self.train_df.columns else n_cols}"
+        )
         self._log(f"Target column: '{self.config.actual_col}'")
         self._log(f"Prediction column: '{self.config.predicted_col}'")
         if y_valid is not None:
-            score = self.model.score(X_valid, y_valid)
-            self._log(f"Validation score (default metric): {score:.4f}")
+            preds_valid = self.model.predict(
+                DMatrix(X_valid, base_margin=base_margin_valid)
+            )
+            score = float(np.mean((y_valid - preds_valid) ** 2))
+            self._log(f"Validation MSE: {score:.4f}")
 
         # -------------------------------------------------------
         if self.config.output_report:
@@ -398,13 +327,13 @@ class GBMModelTrainer:
             pred_col = self.config.predicted_col
 
             # Predict on train and validation
-            if hasattr(self.model, "predict_proba"):
-                train_preds = self.model.predict_proba(X_train)[:, 1]
-                valid_preds = self.model.predict_proba(X_valid)[:, 1]
-            else:
-                train_preds = self.model.predict(X_train)
-                valid_preds = self.model.predict(X_valid)
-            
+            train_preds = self.model.predict(
+                DMatrix(X_train, base_margin=base_margin_train)
+            )
+            valid_preds = self.model.predict(
+                DMatrix(X_valid, base_margin=base_margin_valid)
+            )
+
             # Assign predictions
             train_df_with_preds = self.train_df.copy()
             valid_df_with_preds = self.valid_df.copy()
@@ -414,21 +343,25 @@ class GBMModelTrainer:
             # Add split for reporting
             train_df_with_preds["split"] = "T"
             valid_df_with_preds["split"] = "V"
-            
+
             if self.holdout_df is not None and not self.holdout_df.empty:
-                if hasattr(self.model, "predict_proba"):
-                    holdout_preds = self.model.predict_proba(X_holdout)[:, 1]
-                else:
-                    holdout_preds = self.model.predict(X_holdout)
+                holdout_preds = self.model.predict(
+                    DMatrix(X_holdout, base_margin=base_margin_holdout)
+                )
                 holdout_df_with_preds = self.holdout_df.copy()
                 holdout_df_with_preds[pred_col] = holdout_preds
                 holdout_df_with_preds["split"] = "H"
 
                 # Concatenate in same order as used for predictions
-                df = pd.concat([train_df_with_preds, valid_df_with_preds, holdout_df_with_preds], axis=0).reset_index(drop=True)
-            else:   
+                df = pd.concat(
+                    [train_df_with_preds, valid_df_with_preds, holdout_df_with_preds],
+                    axis=0,
+                ).reset_index(drop=True)
+            else:
                 # Concatenate in same order as used for predictions
-                df = pd.concat([train_df_with_preds, valid_df_with_preds], axis=0).reset_index(drop=True)
+                df = pd.concat(
+                    [train_df_with_preds, valid_df_with_preds], axis=0
+                ).reset_index(drop=True)
 
             mar = ModelAnalysisReport(
                 df,
@@ -443,20 +376,22 @@ class GBMModelTrainer:
                 func_name = plot_cfg.get("plot")
                 title = plot_cfg.get("title", func_name)
                 kwargs = plot_cfg.get("kwargs", {})
-            
+
                 try:
                     plot_func = getattr(plots, func_name)
                     mar.add_plot(plot_func, title, **kwargs)
                     self._log(f"✔️ Added plot: {title} ({func_name})")
                 except Exception as e:
                     self._log(f"⚠️ Failed to add plot '{func_name}': {e}")
-            
+
             # Save locally and (optionally) to S3
-            report_local_path, report_s3_path = self._resolve_output_path(self.config.report_file)
+            report_local_path, report_s3_path = self._resolve_output_path(
+                self.config.report_file
+            )
             report_local_path.parent.mkdir(parents=True, exist_ok=True)
             mar.save(report_local_path)
             self._log(f"Analysis report saved to {report_local_path.resolve()}")
-            
+
             if report_s3_path:
                 upload_file_to_s3(report_local_path, report_s3_path)
                 self._log(f"Analysis report uploaded to {report_s3_path}")
@@ -465,7 +400,7 @@ class GBMModelTrainer:
         config_local_path, config_s3_path = self._resolve_output_path("config.yaml")
         shutil.copy(self.config_path, config_local_path)
         self._log(f"Saved config to {config_local_path}")
-        
+
         if config_s3_path:
             upload_file_to_s3(config_local_path, config_s3_path)
             self._log(f"Config uploaded to {config_s3_path}")
@@ -475,32 +410,50 @@ class GBMModelTrainer:
         if self.config.output_log:
             log_file = self._write_log()
 
-def parse_search_space(raw_space: dict):
-    search_space = {}
-    for param_name, param_cfg in raw_space.items():
-        param_type = param_cfg["type"].lower()
+
+def parse_search_space(raw_space: dict) -> dict:
+    """Convert a user-provided search space into skopt dimensions."""
+
+    search_space: dict[str, Any] = {}
+    for name, cfg in raw_space.items():
+        # Allow simple list/tuple specification
+        if isinstance(cfg, (list, tuple)):
+            if len(cfg) == 2:
+                low, high = cfg
+                if all(isinstance(v, int) for v in (low, high)):
+                    search_space[name] = Integer(low, high)
+                else:
+                    search_space[name] = Real(float(low), float(high))
+            else:
+                search_space[name] = Categorical(list(cfg))
+            continue
+
+        if not isinstance(cfg, dict):
+            raise ValueError(f"Unsupported search space config for '{name}': {cfg}")
+
+        param_type = cfg["type"].lower()
         if param_type == "integer":
-            search_space[param_name] = Integer(
-                low=param_cfg["low"],
-                high=param_cfg["high"],
-                prior=param_cfg.get("prior", "uniform")
+            search_space[name] = Integer(
+                low=cfg["low"],
+                high=cfg["high"],
+                prior=cfg.get("prior", "uniform"),
             )
         elif param_type == "real":
-            search_space[param_name] = Real(
-                low=param_cfg["low"],
-                high=param_cfg["high"],
-                prior=param_cfg.get("prior", "uniform")
+            search_space[name] = Real(
+                low=cfg["low"],
+                high=cfg["high"],
+                prior=cfg.get("prior", "uniform"),
             )
         elif param_type == "categorical":
-            search_space[param_name] = Categorical(
-                categories=param_cfg["categories"]
-            )
+            search_space[name] = Categorical(categories=cfg["categories"])
         else:
             raise ValueError(f"Unsupported type: {param_type}")
     return search_space
 
+
 def is_s3_path(path: str | Path) -> bool:
     return str(path).startswith("s3://")
+
 
 def upload_file_to_s3(local_path: Path, s3_path: str) -> None:
     parsed = urlparse(s3_path)

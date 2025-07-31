@@ -1,3 +1,7 @@
+import pytest
+
+pytest.importorskip("pandas")
+pytest.importorskip("matplotlib")
 import pandas as pd
 from analysis.report import ModelAnalysisReport
 
@@ -11,6 +15,7 @@ def test_metrics():
 
 def test_partial_gini_plot_returns_figure(monkeypatch):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -21,8 +26,10 @@ def test_partial_gini_plot_returns_figure(monkeypatch):
     fig = rep.plot_partial_gini(top_percent=50)
     assert hasattr(fig, "savefig")
 
+
 def test_balanced_spread_returns_figure(monkeypatch):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
