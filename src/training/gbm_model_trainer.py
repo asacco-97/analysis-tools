@@ -50,6 +50,18 @@ class GBMModelTrainerConfig:
     plots_to_add: List[Dict[str, Any]] = field(default_factory=list)
     tabulate_vars: List[str] = field(default_factory=list)
     tuning: TuningConfig = field(default_factory=TuningConfig)
+    callbacks: List[Dict[str, Any]] = field(
+        default_factory=lambda: [
+            {
+                "name": "log_eval",
+                "period": 50
+            },
+            {
+                "name": "early_stopping", 
+                "stopping_rounds": 30
+            },
+        ]
+    )
 
 
 class GBMModelTrainer:
@@ -144,7 +156,7 @@ class GBMModelTrainer:
 
     def _write_log(self) -> str:
         local_path, s3_path = self._resolve_output_path(self.config.log_file)
-        with open(local_path, "w") as f:
+        with open(local_path, "w", encoding="utf-8") as f:
             f.write("\n".join(self.log_lines))
 
         if s3_path:
