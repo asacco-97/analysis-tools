@@ -1,10 +1,13 @@
 import sys
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("matplotlib")
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import pytest
 
 # Ensure src directory is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,4 +25,3 @@ def test_perfect_predictions_auc_is_one(monkeypatch):
     auc_scores = plot_auc_curves(y_true, y_scores)
 
     assert auc_scores["Model"] == 1.0
-
