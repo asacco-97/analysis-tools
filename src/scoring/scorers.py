@@ -1,15 +1,13 @@
 import numpy as np
-from typing import Callable, Union
+import pandas as pd
+from typing import Callable, Union, Optional
+from functools import partial
+import warnings 
 from sklearn.metrics import mean_absolute_percentage_error as mape
-from sklearn.metrics import get_scorer as sklearn_get_scorer
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    log_loss,
-    roc_auc_score,
-    mean_squared_error,
-    mean_absolute_error,
-)
+import sklearn.metrics as sk_metrics
+
+gini_weight = 0.7  # Default weight for gini + mape custom metric
+partial_gini_top_percent = 10  # Default top percent for partial gini custom metric
 
 # --- Normalized Gini
 def gini(actual, pred):
@@ -22,45 +20,92 @@ def gini(actual, pred):
     gini_sum -= (len(actual) + 1) / 2.0
     return gini_sum / len(actual)
 
-def neg_normalized_gini(y_true, y_pred):
-    """Negative Normalized Gini coefficient for use with Bayesian search"""
-    return -(gini(y_true, y_pred) / gini(y_true, y_true))
+def normalized_gini(y_true, y_pred) -> float:
+    """Normalized Gini coefficient for use with Bayesian search"""
+    return gini(y_true, y_pred) / gini(y_true, y_true)
+
+# --- Normalized Partial Gini (top X% of predictions)
+def partial_gini_index(y_true, y_pred, top_percent: float = 10) -> float:
+    """Normalized Partial Gini over the top X% of predicted scores (no weights)"""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    df = pd.DataFrame({
+        "actual": y_true,
+        "predicted": y_pred,
+    })
+
+    df["weighted_actual"] = df["actual"]
+
+    df.sort_values("predicted", ascending=False, inplace=True)
+    df["cum_exposure"] = np.linspace(1 / len(df), 1, len(df))
+    df["cum_actual"] = df["weighted_actual"].cumsum() / df["weighted_actual"].sum()
+
+    pop = np.insert(df["cum_exposure"].values, 0, 0) # type: ignore
+    cum = np.insert(df["cum_actual"].values, 0, 0) # type: ignore
+
+    # Perfect ordering
+    df.sort_values("weighted_actual", ascending=False, inplace=True)
+    df["cum_exposure"] = np.linspace(1 / len(df), 1, len(df))
+    df["cum_actual"] = df["weighted_actual"].cumsum() / df["weighted_actual"].sum()
+    perf_pop = np.insert(df["cum_exposure"].values, 0, 0) # type: ignore
+    perf_cum = np.insert(df["cum_actual"].values, 0, 0) # type: ignore
+
+    def _partial(pop, cum):
+        cutoff = top_percent / 100
+        idx = np.searchsorted(pop, cutoff, side="right")
+        pop_cut = pop[:idx]
+        cum_cut = cum[:idx]
+        if len(pop_cut) == 0 or pop_cut[-1] < cutoff:
+            pop_cut = np.append(pop_cut, cutoff)
+            cum_cut = np.append(cum_cut, np.interp(cutoff, pop, cum))
+        auc = np.trapezoid(cum_cut, x=pop_cut)
+        baseline = (cutoff ** 2) / 2
+        return (auc - baseline) / (1 - baseline)
+
+    return _partial(pop, cum) / _partial(perf_pop, perf_cum) # type: ignore
 
 # --- Example template for custom scorer - can be passed as an evaluation function to src.training.GBMModelTrainer
-def gini_mape_custom_metric(y_true, y_pred):
+def gini_mape_custom_metric(y_true, y_pred, gini_weight: float = 0.7) -> float:
     """Balance rank-ordering with prediction accuracy where both metrics are on the same scale (0, 1)."""
-    return (0.7 * neg_normalized_gini(y_true, y_pred)) - (0.3 * (1 - mape(y_true, y_pred)))
+    return (gini_weight * normalized_gini(y_true, y_pred)) + ((1 - gini_weight) * (1 - mape(y_true, y_pred)))
 
-# Mapping for custom scorers
-METRICS = {
-    "neg_normalized_gini": neg_normalized_gini,
-    "gini_mape_0.7_0.3_weighted_avg": gini_mape_custom_metric,
-    "logloss": log_loss,
-    "roc_auc": roc_auc_score,
-    "f1": f1_score,
-    "mse": mean_squared_error,
-    "mae": mean_absolute_error,
-}
+# --- Custom metrics added here
+normalized_gini.__name__ = "normalized_gini"
+normalized_gini.__name__ = "normalized_gini"
 
-def get_scorer(name: str) -> Callable:
+gini_mape_70_30_weighted_avg = partial(gini_mape_custom_metric, gini_weight=0.7)
+gini_mape_70_30_weighted_avg.__name__ = "gini_mape_70_30_weighted_avg"
+
+normalized_partial_gini_10 = partial(partial_gini_index, top_percent=10)
+normalized_partial_gini_10.__name__ = "normalized_partial_gini_10"
+
+normalized_partial_gini_20 = partial(partial_gini_index, top_percent=20)
+normalized_partial_gini_20.__name__ = "normalized_partial_gini_20"
+
+
+
+def get_scorer(name_or_func: Optional[Union[str, Callable]] = None) -> tuple[Callable, str, bool]:
     """
-    Fetch a scorer by name. Falls back to sklearn's built-in scorers if not custom.
-
-    Args:
-        name (str): Scorer name (e.g., "roc_auc", "normalized_gini")
-
-    Returns:
-        Callable: A scoring function y_true, y_pred -> float
+    Returns a scoring function and metadata: (scoring_func, name, maximize).
+    Supports any function from sklearn.metrics or a user-passed callable.
     """
-    if name in METRICS:
-        return METRICS[name]
+    # Check if the input is a custom callable function
+    if callable(name_or_func):
+        return name_or_func, getattr(name_or_func, "__name__", "custom_metric"), False
 
-    try:
-        # Sklearn scorers need to be converted to callables
-        scorer = sklearn_get_scorer(name)
-        return lambda y_true, y_pred: scorer._score_func(y_true, y_pred)
-    except ValueError:
+    if isinstance(name_or_func, str):
+        # Try sklearn.metrics lookup
+        if hasattr(sk_metrics, name_or_func):
+            scorer = getattr(sk_metrics, name_or_func)
+            maximize = not name_or_func.startswith(("neg_", "log_loss", "mean_", "mse", "mae", "brier"))
+            return scorer, name_or_func, maximize
+        
         raise ValueError(
-            f"Unknown scoring function '{name}'. "
-            f"Must be one of: {list(METRICS.keys())} or a valid sklearn scorer."
+            f"Unknown scoring function '{name_or_func}'. "
+            f"Must be a valid sklearn.metrics function or custom callable."
         )
+    
+    warnings.warn("Scorer not specified: defaulting to mean_squared_error.")
+    return sk_metrics.mean_squared_error, "mean_squared_error", False
+
