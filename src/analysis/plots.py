@@ -682,13 +682,21 @@ def crunched_residual_plot(
     df["residual"] = residual
 
     df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
+
+
+    if exposure_col:
+        df["exposure"] = df[exposure_col]
+    else:
+        df["exposure"] = 1.0 
+
+    # Exposure-weighted grouping
     grouped = (
         df.groupby("group", observed=False)
-        .agg(
-            count=(predicted_col, "count"),
-            avg_predicted=(predicted_col, "mean"),
-            avg_residual=("residual", "mean"),
-        )
+        .apply(lambda g: pd.Series({
+            "count": len(g),
+            "avg_predicted": np.average(g[predicted_col], weights=g["exposure"]),
+            "avg_residual": np.average(g["residual"], weights=g["exposure"]),
+        }))
         .reset_index()
     )
 
