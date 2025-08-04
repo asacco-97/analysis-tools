@@ -488,14 +488,7 @@ def plot_residual_fit(
 ) -> plt.Figure:
     """
     Plots mean residuals ±1 std vs fitted for any residual type: raw, normalized, 
-    or tweedie deviance.
-
-    Parameters
-    ----------
-    residual_type : str
-        Type of residual to compute: "raw", "normalized", or "tweedie_deviance".
-    p : float, optional
-        Power parameter for Tweedie (needed if residual_type='tweedie_deviance')
+    or tweedie deviance, optionally weighted by exposure.
     """
     df = df.copy()
 
@@ -511,22 +504,34 @@ def plot_residual_fit(
         df["residual"] = tweedie_deviance_residuals(df[actual_col], df[predicted_col], p)
 
     else:
-        raise ValueError(f"Unknown residual_type '{residual_type}'. Choose from 'raw', 'normalized', 'tweedie_deviance'.")
+        raise ValueError(f"Unknown residual_type '{residual_type}'. Choose from 'raw', 'normalized', or 'tweedie_deviance'.")
 
-    # Bin predictions to stabilize plot
     df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
+    if exposure_col and exposure_col in df.columns:
+        df["exposure"] = df[exposure_col]
 
-    # Aggregate
-    grouped = df.groupby("group", observed=False).agg(
-        count=(predicted_col, "count"),
-        avg_predicted=(predicted_col, "mean"),
-        avg_residual=("residual", "mean"),
-        std_residual=("residual", "std"),
-    ).reset_index()
+        def weighted_stats(g):
+            weights = g["exposure"]
+            mean_resid = np.average(g["residual"], weights=weights)
+            std_resid = np.sqrt(np.average((g["residual"] - mean_resid) ** 2, weights=weights))
+            return pd.Series({
+                "count": len(g),
+                "avg_predicted": np.average(g[predicted_col], weights=weights),
+                "avg_residual": mean_resid,
+                "std_residual": std_resid,
+            })
+
+        grouped = df.groupby("group", observed=False).apply(weighted_stats).reset_index()
+    else:
+        grouped = df.groupby("group", observed=False).agg(
+            count=(predicted_col, "count"),
+            avg_predicted=(predicted_col, "mean"),
+            avg_residual=("residual", "mean"),
+            std_residual=("residual", "std"),
+        ).reset_index()
 
     group_size = int(np.nanpercentile(grouped["count"], 50))
 
-    # Plot
     fig, ax = plt.subplots(figsize=figsize)
     ax.plot(grouped["avg_predicted"], grouped["avg_residual"],
             marker='o', linestyle='-', color='blue', label="Mean Residual")
@@ -551,6 +556,7 @@ def plot_residual_fit(
     ax.legend(frameon=True)
     plt.tight_layout()
     return fig
+
 
 
 # --- Gain and lift charts ---------------------------------------------------
@@ -635,13 +641,15 @@ def lift_chart(
         df.groupby("bin", observed=False)
         .apply(
             lambda g: pd.Series({
-                "Avg Actual": np.average(g[actual_col], weights=g["exposure"]),
-                "Avg Predicted": np.average(g[predicted_col], weights=g["exposure"]),
+                "Sum Actual": np.sum(g["weighted_actual"]),
+                "Sum Predicted": np.sum(g[predicted_col] * g["exposure"]),
                 "Total Exposure": g["exposure"].sum(),
             })
         )
         .reset_index()
     )
+    grouped["Avg Actual"] = grouped["Sum Actual"] / grouped["Total Exposure"]
+    grouped["Avg Predicted"] = grouped["Sum Predicted"] / grouped["Total Exposure"]
 
     effective_title = title or "Lift Chart by Prediction Decile"
     if split_name:
@@ -678,27 +686,32 @@ def crunched_residual_plot(
 ) -> plt.Figure:
     """Return a plot of average residuals vs. fitted values."""
     df = df.copy()
-    residual = df[actual_col] - df[predicted_col]
-    df["residual"] = residual
-
+    df["residual"] = df[actual_col] - df[predicted_col]
     df["group"] = pd.qcut(df[predicted_col], num_groups, duplicates="drop")
 
-
-    if exposure_col:
+    if exposure_col and exposure_col in df.columns:
         df["exposure"] = df[exposure_col]
+        grouped = (
+            df.groupby("group", observed=False)
+            .apply(
+                lambda g: pd.Series({
+                    "count": len(g),
+                    "avg_predicted": np.average(g[predicted_col], weights=g["exposure"]),
+                    "avg_residual": np.average(g["residual"], weights=g["exposure"]),
+                })
+            )
+            .reset_index()
+        )
     else:
-        df["exposure"] = 1.0 
-
-    # Exposure-weighted grouping
-    grouped = (
-        df.groupby("group", observed=False)
-        .apply(lambda g: pd.Series({
-            "count": len(g),
-            "avg_predicted": np.average(g[predicted_col], weights=g["exposure"]),
-            "avg_residual": np.average(g["residual"], weights=g["exposure"]),
-        }))
-        .reset_index()
-    )
+        grouped = (
+            df.groupby("group", observed=False)
+            .agg(
+                count=(predicted_col, "count"),
+                avg_predicted=(predicted_col, "mean"),
+                avg_residual=("residual", "mean"),
+            )
+            .reset_index()
+        )
 
     group_size = int(np.nanpercentile(grouped["count"], 50))
 
