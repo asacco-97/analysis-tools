@@ -1,10 +1,9 @@
 actual_col: target
 base_margin_col: null
-early_stopping_maximize: false
-early_stopping_metric: logloss
+early_stopping_maximize: true
+early_stopping_metric: auc
 early_stopping_rounds: 20
 evaluation:
-  output_report: true
   plots_to_add:
   - plot: gain_curve_with_gini
     title: Gain Curve / Lorenz Curve
@@ -21,30 +20,33 @@ evaluation:
     plot: plot_residual_fit
     title: Std and Avg of Normalized Residuals
   report_file: model_analysis.html
-  report_params: {}
   tabulate_vars:
   - job
   - education
   - age
-feval: logloss
 hyperparameters:
   colsample_bytree: 0.5
+  eval_metric:
+  - logloss
+  - auc
   learning_rate: 0.1
   max_depth: 3
   n_estimators: 100
   objective: binary:logistic
-  random_state: 42
+  scale_pos_weight: 5.0
   subsample: 0.5
 log_eval_period: 50
 log_file: training.log
 model_file: model_obj.json
-output_dir: outputs
+output_dir: s3://pr-home-datascience/outputs
 output_log: true
 predicted_col: pred_xgb
+random_state: 2025
 tuning:
+  cv: 3
+  maximize: false
   n_iter: 25
-  objective_func: neg_normalized_gini
-  output_tuning: true
+  objective_func: null
   search_space:
     eta:
       high: 0.3
@@ -56,4 +58,7 @@ tuning:
     subsample:
     - 0.6
     - 0.9
+  stratified_cv:
+  - loan
   tuning_file: tuning_results.csv
+weight_col: weights
