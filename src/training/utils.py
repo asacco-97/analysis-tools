@@ -1,5 +1,4 @@
-from training.gbm_model_trainer import XGBModelTrainer
-from typing import List
+from typing import Any, List, Any
 import logging 
 
 class ListLogHandler(logging.Handler):
@@ -12,7 +11,11 @@ class ListLogHandler(logging.Handler):
         self.log_list.append(msg)
 
 class XGBLogger:
-    def __init__(self, trainer: XGBModelTrainer):
+    """
+    Context manager for logger that integrates memory + file logging,
+    automatically shuts down after use.
+    """
+    def __init__(self, trainer: Any):
         self.trainer = trainer
         self.name = "xgb-trainer"
 
