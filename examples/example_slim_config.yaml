@@ -1,0 +1,38 @@
+actual_col: target
+base_margin_col: null
+early_stopping_maximize: false
+early_stopping_metric: null
+early_stopping_rounds: null
+evaluation:
+  plots_to_add: []
+  report_file: model_analysis.html
+  tabulate_vars: []
+hyperparameters:
+  colsample_bytree: 0.5
+  learning_rate: 0.1
+  max_depth: 3
+  n_estimators: 250
+  objective: binary:logistic
+  subsample: 0.5
+log_eval_period: 50
+log_file: training.log
+model_file: model_obj.json
+output_dir: outputs
+output_log: true
+predicted_col: pred_xgb
+random_state: 2025
+tuning:
+  cv: 5
+  maximize: false
+  n_iter: 25
+  objective_func: log_loss
+  search_space:
+    colsample_bytree:
+    - 0.1
+    - 0.9
+    max_depth:
+    - 3
+    - 12
+  stratified_cv: null
+  tuning_file: tuning_results.csv
+weight_col: weights

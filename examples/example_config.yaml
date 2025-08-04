@@ -27,6 +27,7 @@ early_stopping_metric: auc # Metric must be included in eval_metric if used for 
 # Evaluation Parameters (optional)
 evaluation:
   report_file: model_analysis.html # Output file name within `output_dir`
+
   plots_to_add:
   - plot: gain_curve_with_gini
     title: Gain Curve / Lorenz Curve
@@ -42,6 +43,7 @@ evaluation:
     title: Std and Avg of Normalized Residuals
     kwargs:
       residual_type: normalized
+
   tabulate_vars:
   - job
   - education
@@ -72,4 +74,3 @@ tuning:
   stratified_cv:
   - loan
   tuning_file: tuning_results.csv
-
