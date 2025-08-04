@@ -12,6 +12,8 @@ import numpy as np
 if not hasattr(np, "int"):
     np.int = int
 import shutil
+from urllib.parse import urlparse
+import boto3
 
 from xgboost import DMatrix, train as xgb_train
 from skopt.space import Real, Integer, Categorical
