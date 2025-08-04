@@ -306,18 +306,7 @@ class XGBModelTrainer:
 
             def objective(trial: optuna.Trial):
                 # Sample params from the space
-                params = {}
-                for key, space in search_space.items():
-                    if isinstance(space, Real):
-                        params[key] = trial.suggest_float(key, space.low, space.high, log=space.prior == "log-uniform")
-                    elif isinstance(space, Integer):
-                        params[key] = trial.suggest_int(key, space.low, space.high)
-                    elif isinstance(space, Categorical):
-                        params[key] = trial.suggest_categorical(key, space.categories)
-                    else:
-                        raise ValueError(f"Unsupported search space for {key}: {space}")
-
-                self.config.hyperparameters.update(params)
+                self.config.hyperparameters.update(parse_search_space(search_space))
 
                 scores = []
 
