@@ -1,59 +1,75 @@
 actual_col: target
-base_margin_col: null
-early_stopping_maximize: false
-early_stopping_metric: logloss
-early_stopping_rounds: 20
-evaluation:
-  output_report: true
-  plots_to_add:
-  - plot: gain_curve_with_gini
-    title: Gain Curve / Lorenz Curve
-  - kwargs:
-      top_percent: 15
-    plot: partial_gini_plot
-    title: Partial Gini (Top 15%)
-  - plot: lift_chart
-    title: Lift Chart
-  - plot: crunched_residual_plot
-    title: Crunched Residuals
-  - kwargs:
-      residual_type: normalized
-    plot: plot_residual_fit
-    title: Std and Avg of Normalized Residuals
-  report_file: model_analysis.html
-  report_params: {}
-  tabulate_vars:
-  - job
-  - education
-  - age
-feval: logloss
+predicted_col: pred_xgb
+output_dir: outputs
+
+# Model Training Parameters
+model_file: model_obj.json
 hyperparameters:
   colsample_bytree: 0.5
+  eval_metric:
+  - logloss
+  - auc
   learning_rate: 0.1
   max_depth: 3
   n_estimators: 100
   objective: binary:logistic
-  random_state: 42
+  scale_pos_weight: 5.0
   subsample: 0.5
+random_state: 2025
+weight_col: null
+base_margin_col: null
+
+# Early Stopping Parameters (Optional)
+early_stopping_rounds: 20
+early_stopping_maximize: true
+early_stopping_metric: auc # Metric must be included in eval_metric if used for early stopping
+
+# Evaluation Parameters (optional)
+evaluation:
+  report_file: model_analysis.html # Output file name within `output_dir`
+  plots_to_add:
+  - plot: gain_curve_with_gini
+    title: Gain Curve / Lorenz Curve
+  - plot: partial_gini_plot
+    title: Partial Gini (Top 15%)
+    kwargs:
+      top_percent: 15
+  - plot: lift_chart
+    title: Lift Chart
+  - plot: crunched_residual_plot
+    title: Crunched Residuals
+  - plot: plot_residual_fit
+    title: Std and Avg of Normalized Residuals
+    kwargs:
+      residual_type: normalized
+  tabulate_vars:
+  - job
+  - education
+  - age
+
+# Logging Parameters (Optional)
+output_log: true
 log_eval_period: 50
 log_file: training.log
-model_file: model_obj.json
-output_dir: outputs
-output_log: true
-predicted_col: pred_xgb
+
+# Tuning Parameters (optional)
 tuning:
+  cv: 3
   n_iter: 25
-  objective_func: neg_normalized_gini
-  output_tuning: true
-  search_space:
-    eta:
+  objective_func: null # Function to maximize or minimize with tuning (specified below)
+  maximize: false
+  search_space: 
+    eta: # Search space can take this format where the variable type is explicitly passed (real, integer, categorical)
       high: 0.3
       low: 0.01
       type: real
-    max_depth:
-    - 3
-    - 6
+    max_depth: # Search space can take this format where only high and low values are specified
+    - 3 # Low
+    - 6 # High
     subsample:
     - 0.6
     - 0.9
+  stratified_cv:
+  - loan
   tuning_file: tuning_results.csv
+
